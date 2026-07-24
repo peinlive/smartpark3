@@ -1,166 +1,238 @@
 <?php
-// /home/myzonaco/smartpark.myzona360.com/modules/vehiculos/crear.php (v3AX)
-//   v3AX: al crear un residente nuevo, permite elegir el TIPO
-//         (inquilino / propietario / visitante) desde el formulario.
-//         Si es visitante y no viene nombre, se guarda "Visitante Apto XXXX".
+// /home/myzonaco/smartpark.myzona360.com/modules/parqueadero/crear.php
+// v3n: crear 1 celda. Valida que el nivel pertenezca al conjunto y que
+//      el código sea único en el conjunto. Si es privada, valida apto dueño.
 
 if (!defined('SMARTPARK_BOOT')) {
     http_response_code(403);
     exit('Forbidden');
 }
 
-require_once INCLUDES_PATH . '/upload_helpers.php';
-require_once INCLUDES_PATH . '/csv_helpers.php';
-
-auth_require_role('super_admin','admin','supervisor','porteria','ronda');
+auth_require_role('super_admin','admin','supervisor');
 
 $pdo = db();
 $u   = auth_user();
-$conjuntoId = $u['conjunto_id'] ?? 1;
+$conjuntoId = (int)($u['conjunto_id'] ?? 1);
 
 $errores = [];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (empty($_POST['_csrf']) && !empty($_POST['csrf_token'])) $_POST['_csrf'] = $_POST['csrf_token'];
     csrf_require();
 
-    $placa    = normalizar_placa(clean_string($_POST['placa'] ?? '', 15));
-    $tipo     = in_array($_POST['tipo'] ?? '', ['carro','moto'], true) ? $_POST['tipo'] : 'carro';
-    $apto_num = clean_string($_POST['apto_numero'] ?? '', 20);
-    $marca    = clean_string($_POST['marca']  ?? '', 60);
-    $linea    = clean_string($_POST['linea']  ?? '', 60);
-    $color    = clean_string($_POST['color']  ?? '', 40);
-    $anio     = clean_int($_POST['modelo_anio'] ?? null, 1950, 2099);
-    $obs      = clean_string($_POST['observaciones'] ?? '', 500);
+    $nivelId      = (int)($_POST['nivel_id'] ?? 0);
+    $codigo       = clean_string($_POST['codigo'] ?? '', 20);
+    $tipo         = in_array($_POST['tipo'] ?? '', ['comun','privada','moto_comun','libre','movilidad_reducida'], true) ? $_POST['tipo'] : 'comun';
+    $aptoDuenoNum = clean_string($_POST['apto_dueno_numero'] ?? '', 20);
+    $permiteCarro = !empty($_POST['permite_carro']) ? 1 : 0;
+    $permiteMoto  = !empty($_POST['permite_moto'])  ? 1 : 0;
+    $observ       = clean_string($_POST['observaciones'] ?? '', 255);
 
-    // Residente: prioriza nuevo si vino texto, sino el id del select
-    $residente_id_sel = clean_int($_POST['residente_id'] ?? null, 1);
-    $r_nuevo_nombre   = clean_string($_POST['residente_nuevo_nombre']  ?? '', 150);
-    $r_nuevo_celular  = normalizar_celular(clean_string($_POST['residente_nuevo_celular'] ?? '', 30));
+    if ($nivelId < 1) $errores[] = 'El nivel es obligatorio.';
+    if ($codigo === '') $errores[] = 'El código es obligatorio.';
+    if ($permiteCarro === 0 && $permiteMoto === 0) $errores[] = 'Debe permitir al menos carro o moto.';
 
-    // v3AX: tipo elegible desde el formulario. Fallback: inquilino
-    $tipoResNuevo = in_array($_POST['residente_tipo_nuevo'] ?? '', ['inquilino','propietario','visitante'], true)
-        ? $_POST['residente_tipo_nuevo']
-        : 'inquilino';
-
-    // v3AX: si es visitante y no hay nombre, generar uno automático
-    if ($tipoResNuevo === 'visitante' && $r_nuevo_nombre === '' && $apto_num !== '') {
-        $r_nuevo_nombre = 'Visitante Apto ' . $apto_num;
+    // Validar que el nivel pertenezca al conjunto
+    $nivel = null;
+    if ($nivelId >= 1) {
+        $st = $pdo->prepare("SELECT id, codigo FROM niveles_parqueadero
+                              WHERE id = :id AND conjunto_id = :c AND activo = 1");
+        $st->execute([':id' => $nivelId, ':c' => $conjuntoId]);
+        $nivel = $st->fetch();
+        if (!$nivel) $errores[] = 'El nivel seleccionado no existe o está inactivo.';
     }
 
-    if ($placa === '' || strlen($placa) < 4) $errores[] = 'Placa inválida.';
-    if ($apto_num === '') $errores[] = 'Apartamento obligatorio.';
-
-    $apto = null;
-    if ($apto_num !== '') {
-        $st = $pdo->prepare("SELECT id, numero_visible FROM apartamentos
-                              WHERE conjunto_id = :c AND numero_visible = :n LIMIT 1");
-        $st->execute([':c' => $conjuntoId, ':n' => $apto_num]);
-        $apto = $st->fetch();
-        if (!$apto) $errores[] = "El apartamento '{$apto_num}' no existe.";
+    // Verificar código único en el conjunto
+    if ($codigo !== '') {
+        $st = $pdo->prepare("SELECT id FROM celdas
+                              WHERE conjunto_id = :c AND nombre_visible = :cd LIMIT 1");
+        $st->execute([':c' => $conjuntoId, ':cd' => $codigo]);
+        if ($st->fetchColumn()) $errores[] = "Ya existe una celda con el código '{$codigo}' en este conjunto.";
     }
 
-    if ($placa !== '') {
-        $st = $pdo->prepare("SELECT id FROM vehiculos
-                              WHERE conjunto_id = :c AND placa = :p AND archivado_en IS NULL LIMIT 1");
-        $st->execute([':c' => $conjuntoId, ':p' => $placa]);
-        if ($st->fetchColumn()) $errores[] = "Ya existe un vehículo activo con la placa '{$placa}'.";
-    }
-
-    // Validar que el residente_id pertenezca al apto (seguridad)
-    $residenteId = null;
-    if ($apto && $r_nuevo_nombre === '' && $residente_id_sel !== null) {
-        $st = $pdo->prepare("SELECT id FROM residentes
-                              WHERE id = :r AND apartamento_id = :a AND archivado_en IS NULL");
-        $st->execute([':r' => $residente_id_sel, ':a' => (int)$apto['id']]);
-        if (!$st->fetchColumn()) {
-            $errores[] = 'El residente seleccionado no pertenece a este apartamento.';
+    // Si es privada → apto dueño OBLIGATORIO. Si es mov_reducida → OPCIONAL.
+    $aptoDuenoId = null;
+    if ($tipo === 'privada') {
+        if ($aptoDuenoNum === '') {
+            $errores[] = 'Las celdas privadas requieren un apartamento dueño.';
         } else {
-            $residenteId = $residente_id_sel;
+            $st = $pdo->prepare("SELECT id FROM apartamentos
+                                  WHERE conjunto_id = :c AND numero_visible = :n LIMIT 1");
+            $st->execute([':c' => $conjuntoId, ':n' => $aptoDuenoNum]);
+            $aptoDuenoId = (int)$st->fetchColumn();
+            if (!$aptoDuenoId) $errores[] = "El apartamento '{$aptoDuenoNum}' no existe.";
         }
-    }
-
-    $fotoRel = null;
-    if (empty($errores)) {
-        try { $fotoRel = upload_foto_vehiculo($_FILES['foto'] ?? [], 'vehiculos'); }
-        catch (RuntimeException $e) { $errores[] = $e->getMessage(); }
+    } elseif ($tipo === 'movilidad_reducida' && $aptoDuenoNum !== '') {
+        // Apto dueño es opcional, pero si lo pones debe existir
+        $st = $pdo->prepare("SELECT id FROM apartamentos
+                              WHERE conjunto_id = :c AND numero_visible = :n LIMIT 1");
+        $st->execute([':c' => $conjuntoId, ':n' => $aptoDuenoNum]);
+        $aptoDuenoId = (int)$st->fetchColumn();
+        if (!$aptoDuenoId) $errores[] = "El apartamento '{$aptoDuenoNum}' no existe.";
     }
 
     if (empty($errores)) {
         try {
             $pdo->beginTransaction();
 
-            // Si vino "residente nuevo" con texto, créalo (prioridad sobre el select)
-            // v3AX: usa el tipo elegible en vez de hardcoded 'inquilino'
-            if ($r_nuevo_nombre !== '') {
-                $ins = $pdo->prepare("INSERT INTO residentes
-                        (apartamento_id, nombre, celular, tipo, vive_en_apto, activo)
-                    VALUES (:a, :n, :c, :tipo, 1, 1)");
-                $ins->execute([
-                    ':a'    => (int)$apto['id'],
-                    ':n'    => $r_nuevo_nombre,
-                    ':c'    => $r_nuevo_celular ?: null,
-                    ':tipo' => $tipoResNuevo,
-                ]);
-                $residenteId = (int)$pdo->lastInsertId();
-            }
+            // Calcular numero_orden automáticamente (MAX + 1 dentro del nivel)
+            $stOrd = $pdo->prepare("SELECT COALESCE(MAX(numero_orden), 0) + 1
+                                      FROM celdas WHERE nivel_id = :nv AND conjunto_id = :c");
+            $stOrd->execute([':nv' => $nivelId, ':c' => $conjuntoId]);
+            $numeroOrden = (int)$stOrd->fetchColumn();
 
-            $ins = $pdo->prepare("
-                INSERT INTO vehiculos
-                    (conjunto_id, apartamento_id, residente_id, placa, tipo,
-                     marca, linea, color, modelo_anio, observaciones, foto_principal, activo)
-                VALUES (:c, :a, :r, :p, :t, :m, :l, :co, :an, :ob, :fp, 1)
-            ");
+            $ins = $pdo->prepare("INSERT INTO celdas
+                    (conjunto_id, nivel_id, numero_orden, nombre_visible, tipo, apto_dueno_id,
+                     permite_carro, permite_moto, activa, observaciones)
+                VALUES (:c, :nv, :no, :nm, :t, :ad, :pc, :pm, 1, :ob)");
             $ins->execute([
-                ':c'  => $conjuntoId, ':a' => (int)$apto['id'], ':r' => $residenteId,
-                ':p'  => $placa, ':t' => $tipo,
-                ':m'  => $marca ?: null, ':l' => $linea ?: null, ':co' => $color ?: null,
-                ':an' => $anio, ':ob' => $obs ?: null, ':fp' => $fotoRel,
+                ':c'  => $conjuntoId, ':nv' => $nivelId,
+                ':no' => $numeroOrden, ':nm' => $codigo, ':t' => $tipo,
+                ':ad' => $aptoDuenoId, ':pc' => $permiteCarro, ':pm' => $permiteMoto,
+                ':ob' => $observ ?: null,
             ]);
-            $vehId = (int)$pdo->lastInsertId();
-
-            $pdo->prepare("INSERT INTO audit_log
-                    (conjunto_id, usuario_id, accion, entidad, entidad_id, descripcion)
-                 VALUES (:c, :u, 'crear', 'vehiculo', :id, :d)")
-                ->execute([
-                    ':c' => $conjuntoId, ':u' => $u['id'], ':id' => $vehId,
-                    ':d' => "Creó vehículo {$placa} para apto {$apto['numero_visible']}"
-                            . ($r_nuevo_nombre !== '' ? " (residente nuevo: {$r_nuevo_nombre} · {$tipoResNuevo})" : ''),
-                ]);
-
+            $celdaId = (int)$pdo->lastInsertId();
             $pdo->commit();
-            flash_set('ok', "Vehículo {$placa} registrado.");
-            redirect('/vehiculos/ver?id=' . $vehId);
-        } catch (Exception $ex) {
+            if (function_exists('flash_set')) flash_set('ok', "Celda '$codigo' creada en {$nivel['codigo']}.");
+            // v3o: respetar return_url si vino
+            $retorno = $_POST['return_url'] ?? ($_GET['return'] ?? '/parqueadero');
+            if (!is_string($retorno) || strlen($retorno) === 0 || $retorno[0] !== '/' || substr($retorno, 0, 2) === '//') {
+                $retorno = '/parqueadero';
+            }
+            redirect($retorno);
+        } catch (Exception $e) {
             $pdo->rollBack();
-            if ($fotoRel) eliminar_foto($fotoRel);
-            $errores[] = APP_DEBUG ? $ex->getMessage() : 'Error al guardar el vehículo.';
+            $errores[] = APP_DEBUG ? $e->getMessage() : 'Error al guardar.';
         }
     }
 }
 
-$_pageTitle = 'Nuevo vehículo';
+// GET / repintar form
+$niveles = $pdo->prepare("SELECT id, codigo, nombre, tipo FROM niveles_parqueadero
+                           WHERE conjunto_id = :c AND activo = 1 ORDER BY orden");
+$niveles->execute([':c' => $conjuntoId]);
+$niveles = $niveles->fetchAll();
+
+$_pageTitle = 'Nueva celda';
 include INCLUDES_PATH . '/header.php';
 ?>
 
+<style>
+.form-celda{max-width:600px;background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;padding:20px;margin-top:12px;}
+.form-celda .form-row{margin-bottom:14px;}
+.form-celda label{display:block;font-size:13px;color:#374151;margin-bottom:4px;font-weight:500;}
+.form-celda input,.form-celda select,.form-celda textarea{width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:5px;}
+.form-celda .form-grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.form-celda .help{font-size:12px;color:#6b7280;margin-top:2px;}
+.form-celda .checkboxes{display:flex;gap:16px;}
+.form-celda .checkboxes label{font-size:14px;display:flex;align-items:center;gap:6px;font-weight:normal;}
+.form-celda .checkboxes input{width:auto;}
+#priv-block{display:none;background:#dbeafe;padding:12px;border-radius:5px;margin-top:4px;}
+#priv-block.show{display:block;}
+</style>
+
 <div class="page-head">
-    <h1 class="page-head__title">Nuevo vehículo</h1>
-    <p class="page-head__sub">Registrar un vehículo y asociarlo a un apartamento.</p>
+    <h1 class="page-head__title">Nueva celda</h1>
+</div>
+
+<div class="toolbar">
+    <a class="btn" href="<?= url('/parqueadero') ?>">← Volver a celdas</a>
+    <a class="btn" href="<?= url('/parqueadero/crear_bloque') ?>">📦 Crear en bloque</a>
 </div>
 
 <?php if (!empty($errores)): ?>
     <div class="flash flash--error">
-        <strong>No se pudo guardar:</strong>
-        <ul style="margin:6px 0 0 18px">
-            <?php foreach ($errores as $err): ?><li><?= e($err) ?></li><?php endforeach; ?>
-        </ul>
+        <ul style="margin:0 0 0 18px"><?php foreach ($errores as $e): ?><li><?= e($e) ?></li><?php endforeach; ?></ul>
     </div>
 <?php endif; ?>
 
-<?php
-$action      = url('/vehiculos/crear');
-$submitLabel = 'Crear vehículo';
-$vehiculo    = null;
-include __DIR__ . '/_form.php';
-?>
+<?php if (empty($niveles)): ?>
+    <div class="notice notice--info">
+        ⚠️ No hay niveles activos. <a href="<?= url('/parqueadero/niveles') ?>"><strong>Crea un nivel primero</strong></a>.
+    </div>
+<?php else: ?>
+
+<form method="POST" class="form-celda">
+    <input type="hidden" name="_csrf" value="<?= csrf_token() ?>">
+
+    <div class="form-grid-2">
+        <div class="form-row">
+            <label>Nivel *</label>
+            <select name="nivel_id" required>
+                <option value="">— Selecciona —</option>
+                <?php foreach ($niveles as $n): ?>
+                    <option value="<?= (int)$n['id'] ?>" <?= (int)($_POST['nivel_id'] ?? 0) === (int)$n['id'] ? 'selected' : '' ?>>
+                        <?= e($n['codigo']) ?><?= $n['nombre'] ? ' — ' . e($n['nombre']) : '' ?>
+                    </option>
+                <?php endforeach; ?>
+            </select>
+        </div>
+        <div class="form-row">
+            <label>Código de la celda *</label>
+            <input type="text" name="codigo" maxlength="20" required placeholder="A-15, B-22..."
+                   value="<?= e($_POST['codigo'] ?? '') ?>">
+            <div class="help">Debe ser único en todo el conjunto.</div>
+        </div>
+    </div>
+
+    <div class="form-row">
+        <label>Tipo de celda *</label>
+        <select name="tipo" id="tipo-select" onchange="togglePrivBlock()">
+            <?php foreach ([
+                'comun'              => '🌐 Común',
+                'privada'            => '🔒 Privada (asignada a un apto)',
+                'moto_comun'         => '🏍️ Moto común',
+                'libre'              => '🆓 Libre (cualquiera)',
+                'movilidad_reducida' => '♿ Movilidad reducida',
+            ] as $k=>$v): ?>
+                <option value="<?= $k ?>" <?= ($_POST['tipo'] ?? 'comun') === $k ? 'selected' : '' ?>><?= $v ?></option>
+            <?php endforeach; ?>
+        </select>
+        <div id="priv-block">
+            <label id="priv-label">Apartamento dueño *</label>
+            <input type="text" name="apto_dueno_numero" maxlength="20" placeholder="ej: 1502"
+                   value="<?= e($_POST['apto_dueno_numero'] ?? '') ?>">
+            <div class="help" id="priv-help">Número visible del apartamento dueño.</div>
+        </div>
+    </div>
+
+    <div class="form-row">
+        <label>Permite</label>
+        <div class="checkboxes">
+            <label><input type="checkbox" name="permite_carro" value="1" <?= !isset($_POST['permite_carro']) || !empty($_POST['permite_carro']) ? 'checked' : '' ?>> 🚗 Carro</label>
+            <label><input type="checkbox" name="permite_moto"  value="1" <?= !empty($_POST['permite_moto']) ? 'checked' : '' ?>> 🏍️ Moto</label>
+        </div>
+    </div>
+
+    <div class="form-row">
+        <label>Observaciones (opcional)</label>
+        <textarea name="observaciones" maxlength="255" rows="2"><?= e($_POST['observaciones'] ?? '') ?></textarea>
+    </div>
+
+    <button type="submit" class="btn btn--primary">Crear celda</button>
+</form>
+
+<script>
+function togglePrivBlock() {
+    var sel = document.getElementById('tipo-select');
+    var blk = document.getElementById('priv-block');
+    var lbl = document.getElementById('priv-label');
+    var hlp = document.getElementById('priv-help');
+    if (sel.value === 'privada') {
+        blk.classList.add('show');
+        lbl.innerHTML = 'Apartamento dueño *';
+        hlp.innerHTML = 'Obligatorio para celdas privadas.';
+    } else if (sel.value === 'movilidad_reducida') {
+        blk.classList.add('show');
+        lbl.innerHTML = 'Apartamento dueño (opcional)';
+        hlp.innerHTML = 'Solo si una persona específica la usa permanentemente. Si es de uso general para residentes con movilidad reducida, déjalo vacío.';
+    } else {
+        blk.classList.remove('show');
+    }
+}
+togglePrivBlock();
+</script>
+
+<?php endif; ?>
 
 <?php include INCLUDES_PATH . '/footer.php'; ?>

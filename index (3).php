@@ -1,452 +1,398 @@
 <?php
-// /home/myzonaco/smartpark.myzona360.com/modules/observaciones/index.php
-// v1.0 (3V): Lista de observaciones sobre vehículos.
-//            Filtra por tipo, gravedad, fechas, placa.
-//            Soporta eliminación individual y masiva.
+// /home/myzonaco/smartpark.myzona360.com/modules/auditoria/index.php
+// v1.0 (3AF): Visualización del audit_log — quién hizo qué y cuándo.
+//   Solo LECTURA. No escribe en BD.
+//   Roles: super_admin (visualizar todo el conjunto).
 
 if (!defined('SMARTPARK_BOOT')) { http_response_code(403); exit('Forbidden'); }
-auth_require_role('super_admin','admin','supervisor','porteria','ronda');
+auth_require_role('super_admin');
 
 $pdo = db();
 $u   = auth_user();
 $conjuntoId = (int)($u['conjunto_id'] ?? 1);
-$esRonda    = auth_has_role('ronda') && !auth_has_role('super_admin','admin','supervisor','porteria');
 
-$f_tipo     = in_array($_GET['tipo']     ?? '', ['mal_parqueo','advertencia','reincidencia','queja','otro'], true) ? $_GET['tipo']     : '';
-$f_gravedad = in_array($_GET['gravedad'] ?? '', ['leve','media','grave'], true)                                     ? $_GET['gravedad'] : '';
+// Filtros
+$f_accion   = clean_string($_GET['accion'] ?? '', 80);
+$f_entidad  = clean_string($_GET['entidad'] ?? '', 80);
+$f_usuario  = (int)($_GET['usuario_id'] ?? 0);
 $f_desde    = clean_string($_GET['desde'] ?? '', 10);
 $f_hasta    = clean_string($_GET['hasta'] ?? '', 10);
-$f_placa    = strtoupper(clean_string($_GET['placa'] ?? '', 15));
+$f_texto    = clean_string($_GET['q'] ?? '', 200);
+$f_pagina   = max(1, (int)($_GET['p'] ?? 1));
+$porPagina  = 50;
 
-$pagina    = max(1, (int)($_GET['p'] ?? 1));
-$porPagina = 50;
-$offset    = ($pagina - 1) * $porPagina;
-
-// La tabla observaciones_vehiculo NO tiene conjunto_id → filtramos via JOIN con vehiculos
-$where  = ['v.conjunto_id = :cid'];
+$where  = ["(al.conjunto_id = :cid OR al.conjunto_id IS NULL)"];
 $params = [':cid' => $conjuntoId];
-if ($f_tipo     !== '') { $where[] = 'o.tipo = :tp';                 $params[':tp'] = $f_tipo; }
-if ($f_gravedad !== '') { $where[] = 'o.gravedad = :gr';             $params[':gr'] = $f_gravedad; }
-if ($f_desde    !== '') { $where[] = 'DATE(o.creado_en) >= :fd';     $params[':fd'] = $f_desde; }
-if ($f_hasta    !== '') { $where[] = 'DATE(o.creado_en) <= :fh';     $params[':fh'] = $f_hasta; }
-if ($f_placa    !== '') { $where[] = 'v.placa LIKE :pl';             $params[':pl'] = '%' . $f_placa . '%'; }
+
+if ($f_accion !== '')  { $where[] = "al.accion = :ac";        $params[':ac']  = $f_accion; }
+if ($f_entidad !== '') { $where[] = "al.entidad = :en";       $params[':en']  = $f_entidad; }
+if ($f_usuario > 0)    { $where[] = "al.usuario_id = :uid";   $params[':uid'] = $f_usuario; }
+if ($f_desde !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $f_desde)) {
+    $where[] = "al.creado_en >= :fd";
+    $params[':fd'] = $f_desde . ' 00:00:00';
+}
+if ($f_hasta !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $f_hasta)) {
+    $where[] = "al.creado_en <= :fh";
+    $params[':fh'] = $f_hasta . ' 23:59:59';
+}
+if ($f_texto !== '') {
+    $where[] = "(al.descripcion LIKE :qt OR al.datos_despues LIKE :qt2)";
+    $params[':qt']  = '%' . $f_texto . '%';
+    $params[':qt2'] = '%' . $f_texto . '%';
+}
 $whereSql = implode(' AND ', $where);
 
-$stC = $pdo->prepare("SELECT COUNT(*) FROM observaciones_vehiculo o
-                       JOIN vehiculos v ON v.id = o.vehiculo_id WHERE $whereSql");
+// Total
+$stC = $pdo->prepare("SELECT COUNT(*) FROM audit_log al WHERE $whereSql");
 $stC->execute($params);
 $total = (int)$stC->fetchColumn();
-$totalPag = max(1, (int)ceil($total / $porPagina));
+$totalPaginas = max(1, (int)ceil($total / $porPagina));
+if ($f_pagina > $totalPaginas) $f_pagina = $totalPaginas;
+$offset = ($f_pagina - 1) * $porPagina;
 
-// KPIs
-$kpiSt = $pdo->prepare("SELECT
-        COUNT(*) AS total,
-        SUM(CASE WHEN o.gravedad = 'leve'  THEN 1 ELSE 0 END) AS leves,
-        SUM(CASE WHEN o.gravedad = 'media' THEN 1 ELSE 0 END) AS medias,
-        SUM(CASE WHEN o.gravedad = 'grave' THEN 1 ELSE 0 END) AS graves,
-        SUM(CASE WHEN DATE(o.creado_en) = CURDATE() THEN 1 ELSE 0 END) AS hoy
-    FROM observaciones_vehiculo o
-    JOIN vehiculos v ON v.id = o.vehiculo_id
-    WHERE v.conjunto_id = :c");
-$kpiSt->execute([':c' => $conjuntoId]);
-$kpi = $kpiSt->fetch();
-
-$sql = "SELECT o.*, v.placa, v.tipo AS veh_tipo,
-               a.numero_visible AS apto,
-               u.nombre_completo AS usuario_nombre
-          FROM observaciones_vehiculo o
-          JOIN vehiculos v ON v.id = o.vehiculo_id
-     LEFT JOIN apartamentos a ON a.id = v.apartamento_id
-     LEFT JOIN usuarios u ON u.id = o.usuario_registra
+// Registros
+$sql = "SELECT al.id, al.conjunto_id, al.usuario_id, al.accion, al.entidad,
+               al.entidad_id, al.descripcion, al.datos_antes, al.datos_despues,
+               al.ip, al.user_agent, al.creado_en,
+               up.nombre_completo AS usuario_nombre, up.usuario AS usuario_login
+          FROM audit_log al
+     LEFT JOIN usuarios up ON up.id = al.usuario_id
          WHERE $whereSql
-      ORDER BY o.creado_en DESC
+      ORDER BY al.creado_en DESC, al.id DESC
          LIMIT $porPagina OFFSET $offset";
 $st = $pdo->prepare($sql);
 $st->execute($params);
-$obs = $st->fetchAll();
+$registros = $st->fetchAll();
 
-function tipoObsBadge($t) {
-    $map = [
-        'mal_parqueo'  => ['🚧 Mal parqueo',  '#fef3c7', '#92400e'],
-        'advertencia'  => ['⚠️ Advertencia',  '#dbeafe', '#1e40af'],
-        'reincidencia' => ['🔁 Reincidencia', '#fed7aa', '#9a3412'],
-        'queja'        => ['📢 Queja',        '#fee2e2', '#991b1b'],
-        'otro'         => ['📌 Otro',         '#e5e7eb', '#374151'],
-    ];
-    $x = $map[$t] ?? [$t, '#e5e7eb', '#374151'];
-    return "<span style=\"display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;background:{$x[1]};color:{$x[2]}\">{$x[0]}</span>";
+// Catálogo de acciones distintas para el select (últimos 90 días)
+$stAcc = $pdo->prepare("SELECT DISTINCT accion FROM audit_log
+                         WHERE (conjunto_id = :c OR conjunto_id IS NULL)
+                           AND creado_en >= DATE_SUB(NOW(), INTERVAL 90 DAY)
+                         ORDER BY accion");
+$stAcc->execute([':c' => $conjuntoId]);
+$catAcciones = array_column($stAcc->fetchAll(), 'accion');
+
+$stEnt = $pdo->prepare("SELECT DISTINCT entidad FROM audit_log
+                        WHERE (conjunto_id = :c OR conjunto_id IS NULL)
+                          AND entidad IS NOT NULL
+                          AND creado_en >= DATE_SUB(NOW(), INTERVAL 90 DAY)
+                        ORDER BY entidad");
+$stEnt->execute([':c' => $conjuntoId]);
+$catEntidades = array_column($stEnt->fetchAll(), 'entidad');
+
+// Catálogo de usuarios (para el filtro)
+$stU = $pdo->prepare("SELECT id, nombre_completo, usuario FROM usuarios
+                       WHERE conjunto_id = :c AND activo = 1
+                    ORDER BY nombre_completo");
+$stU->execute([':c' => $conjuntoId]);
+$catUsuarios = $stU->fetchAll();
+
+// KPIs
+$stK = $pdo->prepare("SELECT COUNT(*) FROM audit_log
+                       WHERE (conjunto_id = :c OR conjunto_id IS NULL)
+                         AND creado_en >= DATE_SUB(NOW(), INTERVAL 24 HOUR)");
+$stK->execute([':c' => $conjuntoId]);
+$kpi24h = (int)$stK->fetchColumn();
+
+$stK7 = $pdo->prepare("SELECT COUNT(*) FROM audit_log
+                        WHERE (conjunto_id = :c OR conjunto_id IS NULL)
+                          AND creado_en >= DATE_SUB(NOW(), INTERVAL 7 DAY)");
+$stK7->execute([':c' => $conjuntoId]);
+$kpi7d = (int)$stK7->fetchColumn();
+
+$stKU = $pdo->prepare("SELECT COUNT(DISTINCT usuario_id) FROM audit_log
+                        WHERE (conjunto_id = :c OR conjunto_id IS NULL)
+                          AND creado_en >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+                          AND usuario_id IS NOT NULL");
+$stKU->execute([':c' => $conjuntoId]);
+$kpiUsuarios7d = (int)$stKU->fetchColumn();
+
+// Export a CSV (todo el resultado del filtro, sin paginar)
+if (($_GET['export'] ?? '') === 'csv') {
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename="auditoria_' . date('Ymd_His') . '.csv"');
+    echo "\xEF\xBB\xBF";
+    $out = fopen('php://output', 'w');
+    fputcsv($out, ['Fecha','Usuario','Login','Acción','Entidad','ID Entidad','Descripción','IP','User-Agent'], ';');
+    $sqlExp = "SELECT al.*, up.nombre_completo AS usuario_nombre, up.usuario AS usuario_login
+                 FROM audit_log al
+            LEFT JOIN usuarios up ON up.id = al.usuario_id
+                WHERE $whereSql
+             ORDER BY al.creado_en DESC LIMIT 5000";
+    $stE = $pdo->prepare($sqlExp);
+    $stE->execute($params);
+    foreach ($stE->fetchAll() as $r) {
+        fputcsv($out, [
+            $r['creado_en'],
+            $r['usuario_nombre'] ?? '',
+            $r['usuario_login'] ?? '',
+            $r['accion'],
+            $r['entidad'] ?? '',
+            $r['entidad_id'] ?? '',
+            $r['descripcion'] ?? '',
+            $r['ip'] ?? '',
+            $r['user_agent'] ?? '',
+        ], ';');
+    }
+    fclose($out);
+    exit;
 }
 
-function gravBadge($g) {
-    $map = [
-        'leve'  => ['🟢 Leve',  '#dcfce7', '#166534'],
-        'media' => ['🟡 Media', '#fef3c7', '#92400e'],
-        'grave' => ['🔴 Grave', '#fee2e2', '#991b1b'],
-    ];
-    $x = $map[$g] ?? [$g, '#e5e7eb', '#374151'];
-    return "<span style=\"display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;background:{$x[1]};color:{$x[2]}\">{$x[0]}</span>";
-}
+// Colores por tipo de acción
+$colorAccion = function($accion) {
+    $a = strtolower($accion);
+    if (strpos($a, 'delete') !== false || strpos($a, 'eliminar') !== false || strpos($a, 'borr') !== false) return ['#dc2626','#fee2e2'];
+    if (strpos($a, 'update') !== false || strpos($a, 'edit') !== false || strpos($a, 'modif') !== false) return ['#d97706','#fef3c7'];
+    if (strpos($a, 'create') !== false || strpos($a, 'insert') !== false || strpos($a, 'crear') !== false || strpos($a, 'nuevo') !== false || strpos($a, 'reg') !== false) return ['#15803d','#dcfce7'];
+    if (strpos($a, 'login') !== false || strpos($a, 'logout') !== false || strpos($a, 'auth') !== false) return ['#1e40af','#dbeafe'];
+    return ['#4b5563','#f3f4f6'];
+};
 
-$_pageTitle = 'Observaciones';
+$_pageTitle = 'Auditoría';
 include INCLUDES_PATH . '/header.php';
 ?>
 
 <style>
-.kpi-row{display:flex;gap:10px;flex-wrap:wrap;margin:8px 0 14px;}
-.kpi-card{background:#fff;border:1px solid #e5e7eb;border-radius:6px;padding:10px 14px;min-width:110px;flex:1;}
-.kpi-card strong{display:block;font-size:20px;}
-.kpi-card span{font-size:11px;color:#6b7280;text-transform:uppercase;}
-.kpi-card.hoy strong{color:#1e6cff;}
-.kpi-card.lv strong{color:#15803d;}
-.kpi-card.md strong{color:#d97706;}
-.kpi-card.gv strong{color:#dc2626;}
-.bulk-bar{position:sticky;bottom:0;background:#1f2937;color:white;padding:14px 20px;margin:16px -16px 0;display:none;align-items:center;gap:12px;box-shadow:0 -3px 10px rgba(0,0,0,.15);border-top:3px solid #dc2626;z-index:100;}
-.bulk-bar.visible{display:flex;}
-.bulk-elim{background:#dc2626;padding:8px 16px;border:none;border-radius:5px;cursor:pointer;font-weight:500;color:white;}
-.col-check{width:32px;text-align:center;}
-.descripcion-cell{max-width:280px;font-size:13px;color:#374151;}
+.aud-head{background:linear-gradient(135deg,#4c1d95,#7c3aed);color:#fff;border-radius:10px;padding:18px 22px;margin-top:12px;}
+.aud-head h1{margin:0;font-size:20px;}
+.aud-head p{margin:6px 0 0;font-size:13px;opacity:.95;}
+
+.kpi-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin:12px 0 16px;}
+.kpi-card{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:12px 16px;text-align:center;}
+.kpi-card.morado{border-left:5px solid #7c3aed;background:#faf5ff;}
+.kpi-card.morado strong{color:#6b21a8;}
+.kpi-card strong{display:block;font-size:26px;line-height:1;font-family:monospace;color:#1f2937;}
+.kpi-card span{font-size:11px;color:#6b7280;text-transform:uppercase;display:block;margin-top:4px;}
+
+.aud-tabla{width:100%;border-collapse:collapse;font-size:12px;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.05);}
+.aud-tabla th{background:#4c1d95;color:#fff;padding:8px 10px;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.3px;position:sticky;top:0;}
+.aud-tabla td{padding:8px 10px;border-bottom:1px solid #f3f4f6;vertical-align:top;}
+.aud-tabla tr:hover{background:#faf5ff;}
+.aud-tabla .fecha{white-space:nowrap;font-family:monospace;color:#6b7280;font-size:11px;}
+.aud-tabla .usuario{font-weight:600;color:#1f2937;}
+.accion-pill{display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;font-family:monospace;}
+.entidad-pill{display:inline-block;padding:1px 6px;border-radius:6px;background:#e0e7ff;color:#4c1d95;font-size:10px;font-weight:600;}
+.datos-toggle{background:none;border:none;color:#7c3aed;cursor:pointer;font-size:11px;padding:0;text-decoration:underline;}
+.datos-pre{background:#faf5ff;border:1px solid #e9d5ff;border-radius:4px;padding:6px 8px;font-family:monospace;font-size:10px;color:#374151;white-space:pre-wrap;word-break:break-all;max-height:200px;overflow:auto;margin-top:4px;}
+.pag-nav{display:flex;justify-content:space-between;align-items:center;margin:14px 0;padding:10px 14px;background:#f8fafc;border-radius:6px;font-size:12px;}
+.pag-nav a{padding:5px 12px;background:#7c3aed;color:#fff;border-radius:5px;text-decoration:none;font-size:11px;}
+.pag-nav a.disabled{background:#e5e7eb;color:#9ca3af;pointer-events:none;}
+
+.sin-datos{text-align:center;padding:40px 20px;color:#9ca3af;font-size:13px;background:#fff;border:1px dashed #e5e7eb;border-radius:8px;}
 </style>
 
-<div class="page-head">
-    <h1 class="page-head__title">⚠️ Observaciones de vehículos</h1>
-    <p class="page-head__sub"><?= $total ?> registro<?= $total === 1 ? '' : 's' ?>.</p>
-</div>
-<!-- v7.5: exportar a Excel/CSV -->
-<div style="margin:-6px 0 14px">
-  <a href="<?= url('/exportar?t=observaciones') ?>" class="btn btn--sm"
-     style="background:#065f46;color:#fff;text-decoration:none;display:inline-flex;
-            align-items:center;gap:5px">
-    📊 Exportar a Excel
-  </a>
-  <small style="color:#9ca3af;margin-left:7px">
-    Descarga un CSV con todo. Sirve de respaldo y para revisar en Excel.
-  </small>
-</div>
-
-
-<div class="kpi-row">
-    <div class="kpi-card"><strong><?= (int)$kpi['total'] ?></strong><span>Total</span></div>
-    <div class="kpi-card hoy"><strong><?= (int)$kpi['hoy'] ?></strong><span>Hoy</span></div>
-    <div class="kpi-card lv"><strong><?= (int)$kpi['leves'] ?></strong><span>🟢 Leves</span></div>
-    <div class="kpi-card md"><strong><?= (int)$kpi['medias'] ?></strong><span>🟡 Medias</span></div>
-    <div class="kpi-card gv"><strong><?= (int)$kpi['graves'] ?></strong><span>🔴 Graves</span></div>
+<div class="aud-head">
+    <h1>🗃️ Auditoría del sistema</h1>
+    <p>Registro histórico de acciones realizadas por los usuarios. Solo visualización — no se puede editar.</p>
 </div>
 
 <div class="toolbar">
-    <a class="btn btn--primary" href="<?= url('/observaciones/crear') ?>">+ Nueva observación</a>
+    <?php $qs = $_GET; $qs['export'] = 'csv'; ?>
+    <a class="btn btn--primary" href="<?= url('/auditoria') ?>?<?= e(http_build_query($qs)) ?>">📥 Exportar CSV</a>
+    <button type="button" class="btn" onclick="window.print()">🖨️ Imprimir</button>
 </div>
 
-<form method="get" action="<?= url('/observaciones') ?>" class="filters">
-    <select name="tipo">
-        <option value="">Todos los tipos</option>
-        <option value="mal_parqueo"  <?= $f_tipo === 'mal_parqueo'  ? 'selected' : '' ?>>🚧 Mal parqueo</option>
-        <option value="advertencia"  <?= $f_tipo === 'advertencia'  ? 'selected' : '' ?>>⚠️ Advertencia</option>
-        <option value="reincidencia" <?= $f_tipo === 'reincidencia' ? 'selected' : '' ?>>🔁 Reincidencia</option>
-        <option value="queja"        <?= $f_tipo === 'queja'        ? 'selected' : '' ?>>📢 Queja</option>
-        <option value="otro"         <?= $f_tipo === 'otro'         ? 'selected' : '' ?>>📌 Otro</option>
+<div class="kpi-row">
+    <div class="kpi-card morado">
+        <strong><?= number_format($kpi24h, 0, ',', '.') ?></strong>
+        <span>⚡ Acciones últimas 24h</span>
+    </div>
+    <div class="kpi-card">
+        <strong><?= number_format($kpi7d, 0, ',', '.') ?></strong>
+        <span>📅 Últimos 7 días</span>
+    </div>
+    <div class="kpi-card">
+        <strong><?= number_format($kpiUsuarios7d, 0, ',', '.') ?></strong>
+        <span>👥 Usuarios activos (7d)</span>
+    </div>
+    <div class="kpi-card">
+        <strong><?= number_format($total, 0, ',', '.') ?></strong>
+        <span>🔎 Coinciden con filtros</span>
+    </div>
+</div>
+
+<form method="get" action="<?= url('/auditoria') ?>" class="filters" style="flex-wrap:wrap">
+    <input type="text" name="q" placeholder="Buscar en descripción..." value="<?= e($f_texto) ?>" style="min-width:200px">
+
+    <select name="usuario_id">
+        <option value="">👥 Todos los usuarios</option>
+        <?php foreach ($catUsuarios as $usr): ?>
+            <option value="<?= (int)$usr['id'] ?>" <?= $f_usuario === (int)$usr['id'] ? 'selected' : '' ?>>
+                <?= e($usr['nombre_completo'] ?: $usr['usuario']) ?>
+            </option>
+        <?php endforeach; ?>
     </select>
-    <select name="gravedad">
-        <option value="">Todas las gravedades</option>
-        <option value="leve"  <?= $f_gravedad === 'leve'  ? 'selected' : '' ?>>🟢 Leve</option>
-        <option value="media" <?= $f_gravedad === 'media' ? 'selected' : '' ?>>🟡 Media</option>
-        <option value="grave" <?= $f_gravedad === 'grave' ? 'selected' : '' ?>>🔴 Grave</option>
+
+    <select name="accion">
+        <option value="">🎯 Todas las acciones</option>
+        <?php foreach ($catAcciones as $ac): ?>
+            <option value="<?= e($ac) ?>" <?= $f_accion === $ac ? 'selected' : '' ?>><?= e($ac) ?></option>
+        <?php endforeach; ?>
     </select>
-    <input type="text" name="placa" placeholder="Placa" value="<?= e($f_placa) ?>" maxlength="15" style="text-transform:uppercase">
-    <input type="date" name="desde" value="<?= e($f_desde) ?>">
-    <input type="date" name="hasta" value="<?= e($f_hasta) ?>">
-    <button type="submit" class="btn btn--primary">Filtrar</button>
-    <a class="btn" href="<?= url('/observaciones') ?>">Limpiar</a>
+
+    <select name="entidad">
+        <option value="">📦 Todas las entidades</option>
+        <?php foreach ($catEntidades as $en): ?>
+            <option value="<?= e($en) ?>" <?= $f_entidad === $en ? 'selected' : '' ?>><?= e($en) ?></option>
+        <?php endforeach; ?>
+    </select>
+
+    <input type="date" name="desde" value="<?= e($f_desde) ?>" title="Desde">
+    <input type="date" name="hasta" value="<?= e($f_hasta) ?>" title="Hasta">
+
+    <button type="submit" class="btn btn--primary" style="background:#7c3aed">Filtrar</button>
+    <a class="btn" href="<?= url('/auditoria') ?>">Limpiar</a>
 </form>
 
-<?php if (empty($obs)): ?>
-    <?php if ((int)$kpi['total'] === 0): ?>
-        <div class="notice notice--info">
-            No hay observaciones registradas.
-            <a href="<?= url('/observaciones/crear') ?>"><strong>+ Registrar primera</strong></a>.
-        </div>
-    <?php else: ?>
-        <div class="notice notice--info">Sin resultados para los filtros aplicados.</div>
-    <?php endif; ?>
+<?php if (empty($registros)): ?>
+    <div class="sin-datos">
+        📭 No hay registros que coincidan con los filtros aplicados.
+        <?php if (empty($f_texto) && !$f_usuario && $f_accion === '' && $f_entidad === '' && $f_desde === '' && $f_hasta === ''): ?>
+            <br><small style="margin-top:8px;display:block">La tabla audit_log no tiene registros aún, o las acciones del sistema no están escribiendo en ella.</small>
+        <?php endif; ?>
+    </div>
 <?php else: ?>
-    <form id="bulk-form" method="POST" action="<?= url('/observaciones/acciones_batch') ?>">
-        <input type="hidden" name="_csrf" value="<?= csrf_token() ?>">
-        <input type="hidden" name="return_url" value="<?= e($_SERVER['REQUEST_URI'] ?? '/observaciones') ?>">
 
-        <div class="table-wrap">
-        <table class="data-table">
+    <div class="pag-nav">
+        <div>
+            Mostrando <?= number_format($offset + 1) ?>-<?= number_format(min($offset + $porPagina, $total)) ?>
+            de <?= number_format($total) ?> registros
+            (página <?= $f_pagina ?> de <?= $totalPaginas ?>)
+        </div>
+        <div>
+            <?php $qsPag = $_GET; ?>
+            <?php $qsPag['p'] = 1; ?>
+            <a href="<?= url('/auditoria') ?>?<?= e(http_build_query($qsPag)) ?>" class="<?= $f_pagina === 1 ? 'disabled' : '' ?>">« Primera</a>
+            <?php $qsPag['p'] = max(1, $f_pagina - 1); ?>
+            <a href="<?= url('/auditoria') ?>?<?= e(http_build_query($qsPag)) ?>" class="<?= $f_pagina === 1 ? 'disabled' : '' ?>">‹ Anterior</a>
+            <?php $qsPag['p'] = min($totalPaginas, $f_pagina + 1); ?>
+            <a href="<?= url('/auditoria') ?>?<?= e(http_build_query($qsPag)) ?>" class="<?= $f_pagina >= $totalPaginas ? 'disabled' : '' ?>">Siguiente ›</a>
+            <?php $qsPag['p'] = $totalPaginas; ?>
+            <a href="<?= url('/auditoria') ?>?<?= e(http_build_query($qsPag)) ?>" class="<?= $f_pagina >= $totalPaginas ? 'disabled' : '' ?>">Última »</a>
+        </div>
+    </div>
+
+    <div class="table-wrap">
+        <table class="aud-tabla">
             <thead>
                 <tr>
-                    <th class="col-check"><input type="checkbox" onchange="obsToggleAll(this)"></th>
-                    <th>Fecha</th><th>Vehículo</th><th>Apto</th><th>Tipo</th><th>Grav.</th>
-                    <th>Descripción</th><th>Usuario</th>
-                    <th class="t-right">Acciones</th>
+                    <th style="min-width:130px">Fecha / Hora</th>
+                    <th style="min-width:120px">Usuario</th>
+                    <th style="min-width:130px">Acción</th>
+                    <th style="min-width:100px">Entidad</th>
+                    <th>Descripción</th>
+                    <th style="min-width:110px">IP</th>
+                    <th style="min-width:60px">Datos</th>
                 </tr>
             </thead>
             <tbody>
-            <?php foreach ($obs as $o):
-                $id = (int)$o['id'];
-            ?>
-                <tr>
-                    <td class="col-check">
-                        <input type="checkbox" name="seleccion[]" value="<?= $id ?>" onchange="obsUpdateBulk()">
-                    </td>
-                    <td>
-                        <?= e(date('d/m/Y', strtotime($o['creado_en']))) ?>
-                        <br><small class="t-muted"><?= e(date('H:i', strtotime($o['creado_en']))) ?></small>
-                    </td>
-                    <td>
-                        <strong style="font-family:monospace"><?= e($o['placa']) ?></strong>
-                        <br><small class="t-muted"><?= $o['veh_tipo'] === 'moto' ? '🏍️ Moto' : '🚗 Carro' ?></small>
-                    </td>
-                    <td><?= $o['apto'] ? e($o['apto']) : '<span class="t-muted">—</span>' ?></td>
-                    <td><?= tipoObsBadge($o['tipo']) ?></td>
-                    <td><?= gravBadge($o['gravedad']) ?></td>
-                    <td class="descripcion-cell"><?= e(mb_strimwidth($o['descripcion'], 0, 100, '…')) ?></td>
-                    <td><?= $o['usuario_nombre'] ? e($o['usuario_nombre']) : '<span class="t-muted">—</span>' ?></td>
-                    <td class="t-right">
-                        <!-- v6.7: ver la novedad SIN entrar a editar -->
-                        <button type="button" class="btn btn--sm" style="background:#dbeafe;color:#1e40af"
-                                onclick="obsVer(<?= $id ?>)" title="Ver detalle y evidencias">👁️</button>
-                        <?php if (!$esRonda): ?>
-                        <a class="btn btn--sm" href="<?= url('/observaciones/editar?id=' . $id) ?>" title="Editar">✏️</a>
-                        <button type="button" class="btn btn--sm" style="background:#fee2e2;color:#991b1b"
-                                onclick="obsElimOne(<?= $id ?>)" title="Eliminar">🗑️</button>
-                        <?php endif; ?>
-                    </td>
-                </tr>
-            <?php endforeach; ?>
+                <?php foreach ($registros as $r):
+                    list($colorTxt, $colorBg) = $colorAccion($r['accion']);
+                ?>
+                    <tr>
+                        <td class="fecha">
+                            <?= e(date('d/m/Y', strtotime($r['creado_en']))) ?><br>
+                            <span style="color:#4b5563"><?= e(date('H:i:s', strtotime($r['creado_en']))) ?></span>
+                        </td>
+                        <td class="usuario">
+                            <?php if ($r['usuario_nombre'] || $r['usuario_login']): ?>
+                                <?= e($r['usuario_nombre'] ?: $r['usuario_login']) ?>
+                                <?php if ($r['usuario_login'] && $r['usuario_nombre']): ?>
+                                    <br><small class="t-muted">@<?= e($r['usuario_login']) ?></small>
+                                <?php endif; ?>
+                            <?php elseif ($r['usuario_id']): ?>
+                                <span class="t-muted">Usuario #<?= (int)$r['usuario_id'] ?></span>
+                            <?php else: ?>
+                                <span class="t-muted">Sistema</span>
+                            <?php endif; ?>
+                        </td>
+                        <td>
+                            <span class="accion-pill" style="background:<?= $colorBg ?>;color:<?= $colorTxt ?>">
+                                <?= e($r['accion']) ?>
+                            </span>
+                        </td>
+                        <td>
+                            <?php if ($r['entidad']): ?>
+                                <span class="entidad-pill"><?= e($r['entidad']) ?></span>
+                                <?php if ($r['entidad_id']): ?>
+                                    <br><small class="t-muted">#<?= (int)$r['entidad_id'] ?></small>
+                                <?php endif; ?>
+                            <?php else: ?>
+                                <span class="t-muted">—</span>
+                            <?php endif; ?>
+                        </td>
+                        <td><?= e($r['descripcion'] ?: '—') ?></td>
+                        <td style="font-family:monospace;font-size:10px;color:#6b7280">
+                            <?= e($r['ip'] ?: '—') ?>
+                        </td>
+                        <td>
+                            <?php if ($r['datos_antes'] || $r['datos_despues']): ?>
+                                <button type="button" class="datos-toggle" onclick="audToggle(<?= (int)$r['id'] ?>)">Ver</button>
+                            <?php else: ?>
+                                <span class="t-muted">—</span>
+                            <?php endif; ?>
+                        </td>
+                    </tr>
+                    <?php if ($r['datos_antes'] || $r['datos_despues']): ?>
+                        <tr id="datos-<?= (int)$r['id'] ?>" style="display:none">
+                            <td colspan="7" style="background:#faf5ff;padding:12px">
+                                <?php if ($r['datos_antes']): ?>
+                                    <div style="margin-bottom:8px">
+                                        <strong style="font-size:11px;color:#991b1b">Datos ANTES:</strong>
+                                        <div class="datos-pre"><?= e($r['datos_antes']) ?></div>
+                                    </div>
+                                <?php endif; ?>
+                                <?php if ($r['datos_despues']): ?>
+                                    <div>
+                                        <strong style="font-size:11px;color:#166534">Datos DESPUÉS:</strong>
+                                        <div class="datos-pre"><?= e($r['datos_despues']) ?></div>
+                                    </div>
+                                <?php endif; ?>
+                                <?php if ($r['user_agent']): ?>
+                                    <div style="margin-top:8px">
+                                        <strong style="font-size:11px;color:#6b7280">User-Agent:</strong>
+                                        <small style="font-family:monospace;color:#6b7280"><?= e($r['user_agent']) ?></small>
+                                    </div>
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                    <?php endif; ?>
+                <?php endforeach; ?>
             </tbody>
         </table>
-        </div>
+    </div>
 
-        <?php if (!$esRonda): ?>
-        <div id="bulk-bar" class="bulk-bar">
-            <span id="bulk-count" style="flex:1;font-weight:600">0 seleccionada(s)</span>
-            <button type="submit" name="accion" value="eliminar" class="bulk-elim"
-                    onclick="return confirm('¿Eliminar las observaciones seleccionadas?');">🗑️ Eliminar seleccionadas</button>
+    <div class="pag-nav">
+        <div>
+            Página <?= $f_pagina ?> de <?= $totalPaginas ?>
         </div>
-        <?php endif; ?>
-    </form>
-
-    <?php if ($totalPag > 1): ?>
-        <nav class="pager">
-            <?php $qs = $_GET; unset($qs['p']); $base = url('/observaciones') . '?' . http_build_query($qs); $sep = $qs ? '&' : '';
-            for ($i = 1; $i <= $totalPag; $i++):
-                if ($i === $pagina): ?><span class="pager__item is-active"><?= $i ?></span>
-                <?php else: ?><a class="pager__item" href="<?= $base . $sep ?>p=<?= $i ?>"><?= $i ?></a>
-                <?php endif;
-            endfor; ?>
-        </nav>
-    <?php endif; ?>
+        <div>
+            <?php $qsPag = $_GET; $qsPag['p'] = max(1, $f_pagina - 1); ?>
+            <a href="<?= url('/auditoria') ?>?<?= e(http_build_query($qsPag)) ?>" class="<?= $f_pagina === 1 ? 'disabled' : '' ?>">‹ Anterior</a>
+            <?php $qsPag['p'] = min($totalPaginas, $f_pagina + 1); ?>
+            <a href="<?= url('/auditoria') ?>?<?= e(http_build_query($qsPag)) ?>" class="<?= $f_pagina >= $totalPaginas ? 'disabled' : '' ?>">Siguiente ›</a>
+        </div>
+    </div>
 <?php endif; ?>
 
+<div style="margin-top:14px;padding:10px 14px;background:#f8fafc;border-radius:6px;font-size:11px;color:#6b7280;line-height:1.6">
+    💡 <strong>Sobre este módulo:</strong> muestra las acciones registradas en <code>audit_log</code>.
+    Los módulos actuales pueden estar escribiendo o no. Cuando implementemos triggers/hooks en las
+    partes críticas (edición de vehículos, eliminación de residentes, cambios de estado, etc.),
+    esta pantalla se llenará automáticamente. Máximo 5.000 registros por export CSV.
+</div>
+
 <script>
-window.OBS_CSRF = <?= json_encode(csrf_token()) ?>;
-window.OBS_ELIM_URL = <?= json_encode(url('/observaciones/eliminar')) ?>;
-function obsToggleAll(cb){ document.querySelectorAll('input[name="seleccion[]"]').forEach(function(c){c.checked=cb.checked;}); obsUpdateBulk(); }
-function obsUpdateBulk(){
-    var n = document.querySelectorAll('input[name="seleccion[]"]:checked').length;
-    var bar = document.getElementById('bulk-bar'); if(!bar) return;
-    if (n > 0) { bar.classList.add('visible'); document.getElementById('bulk-count').textContent = n + ' seleccionada(s)'; }
-    else bar.classList.remove('visible');
-}
-function obsElimOne(id){
-    if (!confirm('¿Eliminar esta observación?')) return;
-    var f = document.createElement('form');
-    f.method = 'POST'; f.action = window.OBS_ELIM_URL;
-    f.innerHTML = '<input type="hidden" name="_csrf" value="'+window.OBS_CSRF+'">' +
-                  '<input type="hidden" name="id" value="'+id+'">' +
-                  '<input type="hidden" name="return_url" value="'+window.location.pathname+window.location.search+'">';
-    document.body.appendChild(f); f.submit();
+function audToggle(id) {
+    var el = document.getElementById('datos-' + id);
+    if (!el) return;
+    el.style.display = el.style.display === 'none' ? 'table-row' : 'none';
 }
 </script>
 
-<!-- ══════════ v6.7: MODAL VER OBSERVACION ══════════ -->
-<div id="obs-modal" style="display:none;position:fixed;inset:0;z-index:2000;
-     background:rgba(15,23,42,.72);padding:18px;overflow-y:auto">
-  <div style="max-width:640px;margin:16px auto;background:#fff;border-radius:14px;
-              box-shadow:0 20px 50px rgba(0,0,0,.35)">
-
-    <div style="display:flex;align-items:center;gap:10px;padding:15px 18px;
-                border-bottom:1px solid #e5e7eb">
-      <h3 style="flex:1;margin:0;font-size:17px">⚠️ Detalle de la novedad</h3>
-      <button onclick="obsCerrar()" style="border:0;background:#f3f4f6;width:32px;height:32px;
-              border-radius:50%;cursor:pointer;font-size:17px;line-height:1;color:#6b7280">×</button>
-    </div>
-
-    <div id="obs-body" style="padding:18px">
-      <p style="text-align:center;color:#9ca3af;padding:26px">⏳ Cargando…</p>
-    </div>
-
-    <div style="padding:13px 18px;border-top:1px solid #e5e7eb;display:flex;gap:8px;
-                justify-content:flex-end;flex-wrap:wrap">
-      <a id="obs-link" href="#" class="btn btn--sm" style="text-decoration:none">🔗 Abrir en página</a>
-      <a id="obs-edit" href="#" class="btn btn--sm" style="text-decoration:none">✏️ Editar</a>
-      <button onclick="obsCerrar()" class="btn btn--sm btn--primary">Cerrar</button>
-    </div>
-  </div>
-</div>
-
-<!-- visor de la foto en grande -->
-<div id="obs-lightbox" style="display:none;position:fixed;inset:0;z-index:2100;
-     background:rgba(0,0,0,.92);cursor:zoom-out" onclick="this.style.display='none'">
-  <img id="obs-lightbox-img" src="" alt=""
-       style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
-              max-width:96vw;max-height:96vh;border-radius:6px">
-</div>
-
-<style>
-#obs-body table{width:100%;border-collapse:collapse;font-size:14px}
-#obs-body th{text-align:left;color:#6b7280;font-weight:600;font-size:12px;
-  padding:7px 9px 7px 0;width:100px;vertical-align:top}
-#obs-body td{padding:7px 0;border-bottom:1px solid #f3f4f6}
-#obs-body .plc{font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:700;
-  letter-spacing:1.5px;font-size:17px}
-#obs-body .gp{font-size:11px;padding:3px 9px;border-radius:10px;font-weight:700;
-  display:inline-block}
-#obs-body .ev{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
-#obs-body .ev img{width:104px;height:104px;object-fit:cover;border-radius:8px;
-  cursor:zoom-in;border:1px solid #e5e7eb}
-#obs-body .ev video{width:150px;border-radius:8px}
+<style media="print">
+    .toolbar, .filters, .sidebar, .pag-nav, header, footer { display:none !important; }
+    .aud-head { background:#4c1d95 !important; -webkit-print-color-adjust:exact; }
 </style>
-
-<script>
-/* v6.7 — Modal para VER una novedad sin tener que entrar a editarla.
-   Muestra: vehiculo, apto, tipo, gravedad, descripcion, quien y cuando,
-   la foto del OCR y TODAS las evidencias adicionales. */
-var OBS_GRAV = {
-  grave:   ['#fee2e2', '#991b1b', '🔴'],
-  media:   ['#fef3c7', '#92400e', '🟡'],
-  leve:    ['#dcfce7', '#166534', '🟢'],
-  ninguna: ['#f3f4f6', '#6b7280', '⚪']
-};
-var OBS_TIPO = {
-  mal_parqueo:  '🚫 Mal parqueo',
-  advertencia:  '⚠️ Advertencia',
-  reincidencia: '🔁 Reincidencia',
-  queja:        '📢 Queja',
-  otro:         '📌 Otro'
-};
-
-function obsEsc(s) {
-  return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
-    return { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c];
-  });
-}
-function obsZoom(u) {
-  document.getElementById('obs-lightbox-img').src = u;
-  document.getElementById('obs-lightbox').style.display = 'block';
-}
-function obsCerrar() {
-  document.getElementById('obs-modal').style.display = 'none';
-  document.body.style.overflow = '';
-}
-
-function obsVer(id) {
-  var m = document.getElementById('obs-modal');
-  var b = document.getElementById('obs-body');
-  m.style.display = 'block';
-  document.body.style.overflow = 'hidden';
-  b.innerHTML = '<p style="text-align:center;color:#9ca3af;padding:26px">⏳ Cargando…</p>';
-
-  document.getElementById('obs-edit').href = '<?= url('/observaciones/editar?id=') ?>' + id;
-  document.getElementById('obs-link').href = '<?= url('/observaciones/ver?id=') ?>' + id;
-
-  fetch('<?= url('/observaciones/api_ver') ?>?id=' + id, { credentials: 'same-origin' })
-    .then(function (r) { return r.json(); })
-    .then(function (d) {
-      if (!d || !d.ok) throw new Error((d && d.error) || 'No se pudo cargar');
-      var o = d.obs;
-      var g = OBS_GRAV[o.gravedad] || ['#f3f4f6', '#6b7280', ''];
-
-      var h = '<table>' +
-        '<tr><th>Vehículo</th><td>' +
-          '<span class="plc">' + obsEsc(o.placa) + '</span> ' +
-          (o.veh_tipo === 'moto' ? '🏍️' : '🚗') +
-          (o.marca || o.color
-             ? '<br><span style="color:#6b7280;font-size:13px">' +
-               obsEsc(o.marca) + ' ' + obsEsc(o.color) + '</span>' : '') +
-        '</td></tr>' +
-        '<tr><th>Apartamento</th><td>' +
-          (o.apto ? '<b>' + obsEsc(o.apto) + '</b>' +
-             (o.torre ? ' · Torre ' + obsEsc(o.torre) : '') +
-             (o.piso ? ' · Piso ' + obsEsc(o.piso) : '')
-           : '<span style="color:#9ca3af">—</span>') +
-        '</td></tr>' +
-        '<tr><th>Tipo</th><td>' + obsEsc(OBS_TIPO[o.tipo] || o.tipo) + '</td></tr>' +
-        '<tr><th>Gravedad</th><td>' +
-          '<span class="gp" style="background:' + g[0] + ';color:' + g[1] + '">' +
-          g[2] + ' ' + obsEsc(o.gravedad).toUpperCase() +
-          (o.gravedad === 'ninguna' ? ' · informativa' : '') + '</span>' +
-        '</td></tr>' +
-        '<tr><th>Descripción</th><td style="white-space:pre-wrap">' +
-          obsEsc(o.descripcion) + '</td></tr>' +
-        '<tr><th>Registró</th><td>' + obsEsc(o.usuario || '—') +
-          '<br><span style="color:#6b7280;font-size:13px">' +
-          obsEsc(o.creado) + '</span></td></tr>' +
-        '</table>';
-
-      // foto principal (la del OCR / la de la revista)
-      if (o.foto_ocr) {
-        h += '<p style="margin:15px 0 5px;font-size:13px;font-weight:600;color:#374151">' +
-             '📷 Foto de la novedad</p>' +
-             '<img src="' + o.foto_ocr + '" onclick="obsZoom(this.src)" ' +
-             'style="width:100%;max-height:300px;object-fit:contain;border-radius:9px;' +
-             'cursor:zoom-in;background:#111">';
-      }
-
-      // evidencias adicionales
-      if (d.evidencias && d.evidencias.length) {
-        h += '<p style="margin:15px 0 5px;font-size:13px;font-weight:600;color:#374151">' +
-             '📎 Evidencias adicionales (' + d.evidencias.length + ')</p><div class="ev">';
-        d.evidencias.forEach(function (e) {
-          if ((e.mime || '').indexOf('video') === 0 || e.tipo === 'video') {
-            h += '<video src="' + e.url + '" controls preload="metadata"></video>';
-          } else {
-            h += '<img src="' + e.url + '" onclick="obsZoom(this.src)" alt="evidencia">';
-          }
-        });
-        h += '</div>';
-      }
-
-      if (!o.foto_ocr && (!d.evidencias || !d.evidencias.length)) {
-        h += '<p style="margin-top:15px;color:#9ca3af;font-size:13px;text-align:center;' +
-             'padding:14px;background:#f9fafb;border-radius:8px">Sin evidencias</p>';
-      }
-
-      b.innerHTML = h;
-    })
-    .catch(function (e) {
-      b.innerHTML = '<p style="color:#991b1b;text-align:center;padding:22px">❌ ' +
-                    obsEsc(e.message) + '</p>';
-    });
-}
-
-// cerrar con Escape o clic fuera
-document.addEventListener('keydown', function (e) {
-  if (e.key !== 'Escape') return;
-  if (document.getElementById('obs-lightbox').style.display === 'block') {
-    document.getElementById('obs-lightbox').style.display = 'none';
-  } else if (document.getElementById('obs-modal').style.display === 'block') {
-    obsCerrar();
-  }
-});
-document.getElementById('obs-modal').addEventListener('click', function (e) {
-  if (e.target === this) obsCerrar();
-});
-</script>
-
-<!-- v7.48: botón volver arriba (módulo largo) -->
-<script>
-(function(){
-  if (document.getElementById("sp-back-to-top") || window.__SP_UI_INIT) return;
-  var b=document.createElement("button");
-  b.id="sp-back-to-top"; b.type="button"; b.innerHTML="↑"; b.title="Volver arriba";
-  b.style.cssText="position:fixed;bottom:20px;right:20px;width:46px;height:46px;border-radius:50%;background:#1e6cff;color:#fff;border:none;font-size:22px;font-weight:700;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,.25);display:none;z-index:9998;opacity:.85";
-  document.body.appendChild(b);
-  b.addEventListener("click",function(){window.scrollTo({top:0,behavior:"smooth"})});
-  window.addEventListener("scroll",function(){b.style.display=(window.scrollY>300)?"block":"none"},{passive:true});
-})();
-</script>
 
 <?php include INCLUDES_PATH . '/footer.php'; ?>

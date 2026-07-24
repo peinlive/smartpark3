@@ -1,185 +1,185 @@
 <?php
-// /home/myzonaco/smartpark.myzona360.com/modules/residentes/ver.php
-// Detalle de residente + listado de sus vehículos.
+// /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php
+// v1.0 (3AG): Vista completa de una observación con todas sus evidencias.
+//   Aditivo: no modifica el módulo /observaciones existente.
+//   Se puede enlazar desde /observaciones/index.php agregando un botón:
+//     <a class="btn btn--sm" href="<?= url('/observaciones/ver?id=' . $obs['id']) ?>">👁️ Ver</a>
 
-if (!defined('SMARTPARK_BOOT')) {
-    http_response_code(403);
-    exit('Forbidden');
-}
-
+if (!defined('SMARTPARK_BOOT')) { http_response_code(403); exit('Forbidden'); }
 auth_require_role('super_admin','admin','supervisor','porteria','ronda');
 
 $pdo = db();
 $u   = auth_user();
-$conjuntoId = $u['conjunto_id'] ?? 1;
-$esRonda    = auth_has_role('ronda') && !auth_has_role('super_admin','admin','supervisor','porteria');
+$conjuntoId = (int)($u['conjunto_id'] ?? 1);
+$esSuperAdmin = auth_has_role('super_admin');
 
-$id = clean_int($_GET['id'] ?? null, 1);
-if (!$id) {
-    flash_set('error', 'ID inválido.');
-    redirect('/residentes');
-}
+$id = (int)($_GET['id'] ?? 0);
+if ($id < 1) { flash_set('error', 'ID inválido'); redirect('/observaciones'); }
 
-$st = $pdo->prepare("
-    SELECT r.*, a.numero_visible AS apto_numero, a.piso, t.numero AS torre_numero
-      FROM residentes r
-      JOIN apartamentos a ON a.id = r.apartamento_id
-      JOIN torres t       ON t.id = a.torre_id
-     WHERE r.id = :id AND a.conjunto_id = :c
-     LIMIT 1
-");
+$labelsTipo = [
+    'mal_parqueo'  => '🚧 Mal parqueo',
+    'advertencia'  => '⚠️ Advertencia',
+    'reincidencia' => '🔁 Reincidencia',
+    'queja'        => '📢 Queja',
+    'otro'         => '📌 Otro',
+];
+
+// Cargar observación
+$st = $pdo->prepare("SELECT o.*, v.placa, v.tipo AS veh_tipo, v.foto_principal AS veh_foto,
+                            a.numero_visible AS apto, a.piso, t.numero AS torre,
+                            r.nombre AS residente_nombre, r.celular AS residente_celular,
+                            up.nombre_completo AS registrado_por
+                       FROM observaciones_vehiculo o
+                       JOIN vehiculos v      ON v.id = o.vehiculo_id
+                  LEFT JOIN apartamentos a   ON a.id = v.apartamento_id
+                  LEFT JOIN torres t         ON t.id = a.torre_id
+                  LEFT JOIN residentes r     ON r.id = v.residente_id
+                  LEFT JOIN usuarios up      ON up.id = o.usuario_registra
+                      WHERE o.id = :id AND v.conjunto_id = :c LIMIT 1");
 $st->execute([':id' => $id, ':c' => $conjuntoId]);
-$r = $st->fetch();
-if (!$r) {
-    flash_set('error', 'Residente no encontrado.');
-    redirect('/residentes');
-}
+$o = $st->fetch();
+if (!$o) { flash_set('error', 'Observación no encontrada'); redirect('/observaciones'); }
 
-// Vehículos del residente
-$veh = $pdo->prepare("
-    SELECT id, placa, tipo, marca, color, archivado_en
-      FROM vehiculos
-     WHERE residente_id = :r
-  ORDER BY archivado_en IS NULL DESC, placa
-");
-$veh->execute([':r' => $id]);
-$vehiculos = $veh->fetchAll();
+// Evidencias adicionales
+$evidencias = [];
+try {
+    $stE = $pdo->prepare("SELECT id, tipo, archivo_url, creado_en FROM observaciones_evidencias
+                           WHERE observacion_id = :o ORDER BY creado_en ASC");
+    $stE->execute([':o' => $id]);
+    $evidencias = $stE->fetchAll();
+} catch (Exception $ex) { /* tabla no existe */ }
 
-// Otros residentes del mismo apto
-$otros = $pdo->prepare("
-    SELECT id, nombre, tipo, vive_en_apto, archivado_en
-      FROM residentes
-     WHERE apartamento_id = :a AND id <> :id
-  ORDER BY archivado_en IS NULL DESC, tipo, nombre
-");
-$otros->execute([':a' => $r['apartamento_id'], ':id' => $id]);
-$otros = $otros->fetchAll();
+$fotoOcr = $o['evidencia_url'] ? (strpos($o['evidencia_url'], 'http') === 0 ? $o['evidencia_url'] : '/uploads/' . ltrim($o['evidencia_url'], '/')) : null;
 
-$_pageTitle = $r['nombre'];
+$_pageTitle = 'Detalle de observación';
 include INCLUDES_PATH . '/header.php';
+
+$colorGrav = $o['gravedad'] === 'grave' ? '#991b1b' : ($o['gravedad'] === 'media' ? '#92400e' : '#166534');
+$bgGrav    = $o['gravedad'] === 'grave' ? '#fee2e2' : ($o['gravedad'] === 'media' ? '#fef3c7' : '#dcfce7');
 ?>
 
-<div class="page-head">
-    <h1 class="page-head__title"><?= e($r['nombre']) ?></h1>
-    <p class="page-head__sub">
-        Apto <strong><?= e($r['apto_numero']) ?></strong> · Torre <?= (int)$r['torre_numero'] ?> · Piso <?= (int)$r['piso'] ?>
-    </p>
+<style>
+.obs-view-head{background:linear-gradient(135deg,<?= $colorGrav ?>, #4c1d95);color:#fff;border-radius:10px;padding:18px 22px;margin-top:12px;}
+.obs-view-head h1{margin:0;font-size:20px;}
+.obs-view-head .meta{margin-top:6px;font-size:12px;opacity:.9;}
+
+.obs-card{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:18px 22px;margin:14px 0;box-shadow:0 1px 3px rgba(0,0,0,.03);}
+.obs-card h3{margin:0 0 10px;font-size:15px;color:#111827;padding-bottom:6px;border-bottom:2px solid #f3f4f6;}
+
+.grav-badge{display:inline-block;padding:6px 14px;background:<?= $bgGrav ?>;color:<?= $colorGrav ?>;border-radius:8px;font-weight:700;font-size:13px;text-transform:uppercase;letter-spacing:.5px;}
+
+.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;}
+.info-item{background:#f8fafc;padding:8px 12px;border-radius:6px;font-size:13px;}
+.info-item strong{display:block;color:#6b7280;font-size:10px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px;}
+@media(max-width:600px){.info-grid{grid-template-columns:1fr}}
+
+.evi-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-top:10px;}
+.evi-card{background:#f8fafc;border:1px solid #e5e7eb;border-radius:6px;padding:8px;text-align:center;cursor:zoom-in;transition:transform .1s;}
+.evi-card:hover{transform:translateY(-2px);border-color:#0e7490;}
+.evi-card img{width:100%;height:120px;object-fit:cover;border-radius:4px;}
+.evi-card .label{font-size:10px;color:#6b7280;margin-top:4px;}
+
+.lightbox{display:none;position:fixed;inset:0;background:rgba(0,0,0,.9);z-index:9999;align-items:center;justify-content:center;padding:20px;cursor:zoom-out;}
+.lightbox.abierto{display:flex;}
+.lightbox img{max-width:100%;max-height:100vh;object-fit:contain;}
+.lightbox-close{position:absolute;top:15px;right:20px;background:rgba(255,255,255,.15);border:none;color:#fff;font-size:24px;width:40px;height:40px;border-radius:50%;cursor:pointer;}
+</style>
+
+<div class="obs-view-head">
+    <a class="btn" href="#" onclick="window.history.back(); return false;">← Volver</a>
+    <h1>👁️ Detalle de observación #<?= (int)$o['id'] ?></h1>
+    <div class="meta">🕐 <?= e(date('d/m/Y H:i:s', strtotime($o['creado_en']))) ?>
+        <?php if ($o['registrado_por']): ?> · Registrada por: <strong><?= e($o['registrado_por']) ?></strong><?php endif; ?>
+    </div>
 </div>
 
 <div class="toolbar">
-    <a class="btn" href="<?= url('/residentes') ?>">← Volver</a>
-
-    <?php if (!$r['archivado_en']): ?>
-        <a class="btn btn--primary" href="<?= url('/residentes/editar?id=' . $id) ?>">✏️ Editar</a>
-
-        <?php if (auth_has_role('super_admin','admin','supervisor')): ?>
-            <a class="btn btn--danger" href="<?= url('/residentes/mudanza?id=' . $id) ?>">
-                🚚 Registrar mudanza
-            </a>
-        <?php endif; ?>
-    <?php else: ?>
-        <?php if (auth_has_role('super_admin','admin')): ?>
-            <form method="post" action="<?= url('/residentes/restaurar') ?>" style="display:inline"
-                  onsubmit="return confirm('¿Restaurar este residente y sacarlo del archivo?');">
-                <?= csrf_field() ?>
-                <input type="hidden" name="id" value="<?= $id ?>">
-                <button type="submit" class="btn">Restaurar del archivo</button>
-            </form>
-        <?php endif; ?>
-    <?php endif; ?>
+    <a class="btn" href="<?= url('/observaciones') ?>">← Volver a observaciones</a>
+    <a class="btn" href="<?= url('/vehiculos/ver?id=' . (int)$o['vehiculo_id']) ?>">🚗 Ver vehículo</a>
+    <button type="button" class="btn" onclick="window.print()">🖨️ Imprimir</button>
 </div>
 
-<div class="detail-grid">
-    <div class="detail-card">
-        <h3 class="detail-card__title">Datos personales</h3>
-        <dl class="detail-list">
-            <dt>Nombre</dt><dd><?= e($r['nombre']) ?></dd>
-            <dt>Tipo</dt>
-            <dd>
-                <?php if ($r['tipo'] === 'propietario'): ?>
-                    <span class="pill pill--info">Propietario</span>
-                <?php elseif ($r['tipo'] === 'inquilino'): ?>
-                    <span class="pill pill--ok">Inquilino</span>
-                <?php elseif ($r['tipo'] === 'familiar'): ?>
-                    <span class="pill pill--muted">Familiar</span>
-                <?php else: ?>
-                    <span class="pill pill--muted">Otro</span>
-                <?php endif; ?>
-            </dd>
-            <?php if (!$esRonda): ?>
-            <dt>Celular</dt><dd><?= e($r['celular'] ?: '—') ?></dd>
-            <?php endif; ?>
-            <dt>Documento</dt><dd><?= e($r['documento'] ?: '—') ?></dd>
-            <dt>Email</dt><dd><?= e($r['email'] ?: '—') ?></dd>
-            <dt>Estado</dt>
-            <dd>
-                <?php if ($r['archivado_en']): ?>
-                    <span class="pill pill--muted">📁 Archivado</span><br>
-                    <small class="t-muted">
-                        Desde <?= e(fecha_humana($r['archivado_en'])) ?><br>
-                        <?php if (!empty($r['archivado_motivo'])): ?>
-                            Motivo: <?= e($r['archivado_motivo']) ?>
-                        <?php endif; ?>
-                    </small>
-                <?php elseif ((int)$r['vive_en_apto'] === 0): ?>
-                    <span class="pill pill--warn">🏠 Propietario que no vive aquí</span>
-                <?php else: ?>
-                    <span class="pill pill--ok">Activo · Vive en el apto</span>
-                <?php endif; ?>
-            </dd>
-            <dt>Registrado</dt><dd><?= e(fecha_humana($r['creado_en'])) ?></dd>
-        </dl>
+<div class="obs-card">
+    <h3>📋 Datos del vehículo y apartamento</h3>
+    <div class="info-grid">
+        <div class="info-item"><strong>Placa</strong><span style="font-family:monospace;font-size:16px;font-weight:700"><?= e($o['placa']) ?></span></div>
+        <div class="info-item"><strong>Tipo</strong><?= $o['veh_tipo'] === 'moto' ? '🏍️ Moto' : '🚗 Carro' ?></div>
+        <div class="info-item"><strong>Apartamento</strong><?= e($o['apto'] ?: '—') ?> <span class="t-muted">(Torre <?= (int)$o['torre'] ?>)</span></div>
+        <div class="info-item"><strong>Residente</strong><?= e($o['residente_nombre'] ?: '—') ?>
+            <?php if ($o['residente_celular']): ?><br><small>📞 <?= e($o['residente_celular']) ?></small><?php endif; ?>
+        </div>
     </div>
+</div>
 
-    <div class="detail-card">
-        <h3 class="detail-card__title">Otros residentes del apto</h3>
-        <?php if (empty($otros)): ?>
-            <p class="t-muted">Sin otros residentes.</p>
-        <?php else: ?>
-            <ul style="list-style:none;padding:0;margin:0">
-            <?php foreach ($otros as $o): ?>
-                <li style="padding:6px 0;border-bottom:1px solid var(--color-border)">
-                    <a href="<?= url('/residentes/ver?id=' . (int)$o['id']) ?>"><?= e($o['nombre']) ?></a>
-                    · <span class="t-muted"><?= e($o['tipo']) ?></span>
-                    <?php if ($o['archivado_en']): ?>
-                        <span class="pill pill--muted">archivado</span>
-                    <?php elseif ((int)$o['vive_en_apto'] === 0): ?>
-                        <span class="pill pill--warn">no vive aquí</span>
-                    <?php endif; ?>
-                </li>
+<div class="obs-card">
+    <h3>⚠️ Observación</h3>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+        <span class="grav-badge"><?= e($labelsTipo[$o['tipo']] ?? $o['tipo']) ?></span>
+        <span class="grav-badge">Gravedad: <?= strtoupper(e($o['gravedad'])) ?></span>
+    </div>
+    <div style="background:#f8fafc;padding:14px;border-radius:6px;font-size:14px;color:#1f2937;white-space:pre-wrap;line-height:1.6">
+        <?= e($o['descripcion']) ?>
+    </div>
+</div>
+
+<?php
+$todasEvi = [];
+if ($fotoOcr) $todasEvi[] = ['url' => $fotoOcr, 'tipo' => 'foto', 'label' => 'Foto principal'];
+foreach ($evidencias as $e) {
+    $todasEvi[] = [
+        'url'   => strpos($e['archivo_url'], 'http') === 0 ? $e['archivo_url'] : '/uploads/' . ltrim($e['archivo_url'], '/'),
+        'tipo'  => $e['tipo'],
+        'label' => 'Adicional · ' . date('d/m/Y H:i', strtotime($e['creado_en'])),
+    ];
+}
+?>
+
+<div class="obs-card">
+    <h3>📎 Evidencias (<?= count($todasEvi) ?>)</h3>
+    <?php if (empty($todasEvi)): ?>
+        <div style="text-align:center;padding:20px;color:#9ca3af;font-size:13px">Sin evidencias adjuntas para esta observación.</div>
+    <?php else: ?>
+        <div class="evi-grid">
+            <?php foreach ($todasEvi as $ev): ?>
+                <?php if ($ev['tipo'] === 'foto'): ?>
+                    <div class="evi-card" onclick="obsAbrirLightbox('<?= e($ev['url']) ?>', '<?= e($ev['label']) ?>')">
+                        <img src="<?= e($ev['url']) ?>" alt="<?= e($ev['label']) ?>" onerror="this.style.display='none'">
+                        <div class="label">📸 <?= e($ev['label']) ?></div>
+                    </div>
+                <?php else: ?>
+                    <a href="<?= e($ev['url']) ?>" target="_blank" class="evi-card" style="display:flex;flex-direction:column;justify-content:center;text-decoration:none;color:inherit">
+                        <div style="font-size:48px">🎬</div>
+                        <div class="label">Video · <?= e($ev['label']) ?></div>
+                    </a>
+                <?php endif; ?>
             <?php endforeach; ?>
-            </ul>
-        <?php endif; ?>
-    </div>
-</div>
-
-<div class="detail-card detail-card--full">
-    <h3 class="detail-card__title">Vehículos asociados (<?= count($vehiculos) ?>)</h3>
-    <?php if (empty($vehiculos)): ?>
-        <p class="t-muted">Sin vehículos registrados a nombre de este residente.</p>
-    <?php else: ?>
-        <table class="data-table">
-            <thead>
-                <tr><th>Placa</th><th>Tipo</th><th>Marca/Color</th><th>Estado</th></tr>
-            </thead>
-            <tbody>
-                <?php foreach ($vehiculos as $v): ?>
-                    <tr>
-                        <td><strong><?= e($v['placa']) ?></strong></td>
-                        <td><?= $v['tipo'] === 'moto' ? '🏍️ Moto' : '🚗 Carro' ?></td>
-                        <td><?= e(trim(($v['marca'] ?? '') . ' ' . ($v['color'] ?? ''))) ?: '—' ?></td>
-                        <td>
-                            <?php if ($v['archivado_en']): ?>
-                                <span class="pill pill--muted">Archivado</span>
-                            <?php else: ?>
-                                <span class="pill pill--ok">Activo</span>
-                            <?php endif; ?>
-                        </td>
-                    </tr>
-                <?php endforeach; ?>
-            </tbody>
-        </table>
+        </div>
     <?php endif; ?>
 </div>
+
+<div class="lightbox" id="obs-lightbox" onclick="obsCerrarLightbox()">
+    <img id="obs-lightbox-img" src="" alt="">
+    <div id="obs-lightbox-label" style="position:absolute;bottom:20px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.7);color:#fff;padding:8px 16px;border-radius:6px;font-family:monospace;font-size:13px"></div>
+    <button class="lightbox-close" onclick="obsCerrarLightbox()">✕</button>
+</div>
+
+<script>
+function obsAbrirLightbox(url, label) {
+    document.getElementById('obs-lightbox-img').src = url;
+    document.getElementById('obs-lightbox-label').textContent = label || '';
+    document.getElementById('obs-lightbox').classList.add('abierto');
+}
+function obsCerrarLightbox() {
+    document.getElementById('obs-lightbox').classList.remove('abierto');
+    document.getElementById('obs-lightbox-img').src = '';
+}
+document.addEventListener('keydown', function(e){ if (e.key === 'Escape') obsCerrarLightbox(); });
+</script>
+
+<style media="print">
+    .toolbar, .lightbox, header, footer, .sidebar { display:none !important; }
+    .obs-view-head { background:#4c1d95 !important; -webkit-print-color-adjust:exact; }
+    .evi-card img { max-height:200px; }
+</style>
 
 <?php include INCLUDES_PATH . '/footer.php'; ?>

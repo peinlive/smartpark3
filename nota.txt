@@ -1,0 +1,129 @@
+reemplazar dato en la tabla del apto
+
+<td><?= e($v['apto_numero']) ?></td>
+////*****************************************************************************************************
+
+<td>
+    <?php if ($r['apto_numero']): ?>
+        <a class="apto-link" data-apto="<?= e($r['apto_numero']) ?>" href="<?= url('/consultas?apto=' . urlencode($r['apto_numero'])) ?>" title="Ver detalles del apto" style="text-decoration:none;">
+            <strong><?= e($r['apto_numero']) ?></strong>
+        </a>
+    <?php else: ?>
+        <span class="t-muted">—</span>
+    <?php endif; ?>
+</td>
+
+
+
+////*****************************************************************************************************
+
+<!-- Estilos base requeridos para el diseño del popover de apartamentos -->
+<style>
+.apto-link {
+    color: #1e40af;
+    text-decoration: none;
+    font-weight: 600;
+    cursor: pointer;
+    border-bottom: 1px dotted #93c5fd;
+    padding-bottom: 1px;
+}
+.apto-link:hover {
+    color: #1d4ed8;
+    border-bottom-style: solid;
+    background: #eff6ff;
+}
+</style>
+
+<!-- Helper nativo del sistema que genera la tarjeta flotante completa -->
+<script src="<?= url('/public/js/apto_popover.js') ?>?v=3bh"></script>
+
+<!-- v3BH.2: Script de precisión estricta para inyectar la torre en las consultas flotantes -->
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Interceptamos la configuración global de la URL del popover antes de que haga la llamada
+    if (window.AptoPopover || document.querySelectorAll('.apto-link').length > 0) {
+        
+        // Escuchamos los clics en los enlaces de apartamentos para corregir la URL de consulta sobre la marcha
+        document.body.addEventListener('click', function(e) {
+            var link = e.target.closest('.apto-link');
+            if (link) {
+                var aptoNum = link.getAttribute('data-apto');
+                var torreNum = link.getAttribute('data-torre');
+                
+                // Si el elemento tiene una torre asociada, forzamos a que re-escriba la ruta temporal
+                if (aptoNum && torreNum) {
+                    window.CQ_APTO_INFO_URL = '<?= url("/consultas/api_apto_info") ?>?apto=' + encodeURIComponent(aptoNum) + '&torre=' + encodeURIComponent(torreNum);
+                    
+                    // Modificamos dinámicamente el href o parámetro por si el popover nativo lee propiedades internas del objeto
+                    link.setAttribute('href', window.CQ_APTO_INFO_URL);
+                }
+            }
+        }, true); // Usamos captura 'true' para actuar antes de que se dispare el popover nativo
+    }
+});
+</script>
+
+<!-- v3o.2: JS inline para botón flotante + multi-select (no depende de archivo externo) -->
+<script>
+(function(){'use strict';
+if(window.__SP_UI_INIT)return;window.__SP_UI_INIT=true;
+function initTop(){
+if(document.getElementById('sp-back-to-top'))return;
+var s=document.createElement('style');
+s.textContent='#sp-back-to-top{position:fixed;bottom:20px;right:20px;width:46px;height:46px;border-radius:50%;background:#1e6cff;color:#fff;border:none;font-size:22px;font-weight:700;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,.25);display:none;align-items:center;justify-content:center;z-index:9998;transition:transform .15s,opacity .15s;opacity:.85}#sp-back-to-top:hover{opacity:1;transform:scale(1.08)}@media(max-width:600px){#sp-back-to-top{bottom:80px;right:14px;width:42px;height:42px}}';
+document.head.appendChild(s);
+var b=document.createElement('button');
+b.id='sp-back-to-top';b.type='button';b.innerHTML='↑';b.title='Volver arriba';
+document.body.appendChild(b);
+b.addEventListener('click',function(){window.scrollTo({top:0,behavior:'smooth'})});
+function u(){b.style.display=(window.scrollY>300)?'flex':'none'}
+window.addEventListener('scroll',u,{passive:true});u();
+}
+function initMulti(){
+document.querySelectorAll('.sp-multi').forEach(function(mb){
+if(mb.__init)return;mb.__init=true;
+var btn=mb.querySelector('.sp-multi-btn');
+var panel=mb.querySelector('.sp-multi-panel');
+if(!btn||!panel)return;
+var label=mb.getAttribute('data-label')||'Filtro';
+var labelAll=mb.getAttribute('data-all')||('Todos: '+label);
+var cbs=panel.querySelectorAll('input[type="checkbox"]');
+if(!panel.querySelector('.sp-multi-actions')){
+var ac=document.createElement('div');
+ac.className='sp-multi-actions';
+ac.innerHTML='<button type="button" data-act="all">Todos</button><button type="button" data-act="none">Ninguno</button>';
+panel.appendChild(ac);
+ac.querySelector('[data-act=all]').addEventListener('click',function(e){e.stopPropagation();cbs.forEach(function(c){c.checked=true});upd()});
+ac.querySelector('[data-act=none]').addEventListener('click',function(e){e.stopPropagation();cbs.forEach(function(c){c.checked=false});upd()});
+}
+function upd(){
+var sel=Array.prototype.filter.call(cbs,function(c){return c.checked});
+if(sel.length===0||sel.length===cbs.length){btn.textContent=labelAll;btn.classList.remove('is-active')}
+else if(sel.length===1){btn.textContent=label+': '+sel.parentNode.textContent.trim();btn.classList.add('is-active')}
+else{btn.textContent=label+': '+sel.length+' seleccionados';btn.classList.add('is-active')}
+}
+cbs.forEach(function(c){c.addEventListener('change',upd)});
+upd();
+btn.addEventListener('click',function(e){
+e.stopPropagation();
+document.querySelectorAll('.sp-multi-panel.is-open').forEach(function(p){if(p!==panel)p.classList.remove('is-open')});
+panel.classList.toggle('is-open');
+});
+panel.addEventListener('click',function(e){e.stopPropagation()});
+});
+if(!window.__SP_CL){
+window.__SP_CL=true;
+document.addEventListener('click',function(){
+document.querySelectorAll('.sp-multi-panel.is-open').forEach(function(p){p.classList.remove('is-open')});
+});
+}
+}
+function init(){try{initTop()}catch(e){}try{initMulti()}catch(e){}}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);
+else init();
+})();
+</script>
+
+
+////*****************************************************************************************************
+//antes del footer
