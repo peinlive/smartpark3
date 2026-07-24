@@ -1,11 +1,26 @@
 <?php
-// /home/myzonaco/smartpark.myzona360.com/modules/revistas/acciones_batch.php
-// v1.0 (3U): Acciones masivas sobre revistas (por ahora solo eliminar).
+// /home/myzonaco/smartpark.myzona360.com/modules/vehiculos/acciones_batch.php
+// v3k.1: HOTFIX CSRF. El sistema espera $_POST['_csrf'] pero el JS del index.php
+//        envía 'csrf_token'. Aliasing defensivo antes de llamar csrf_require().
+//        Acepta también _token y header X-CSRF-Token (uso futuro AJAX).
+//
+// Acciones: archivar | restaurar | eliminar. Eliminar es DELETE definitivo.
 
-if (!defined('SMARTPARK_BOOT')) { http_response_code(403); exit('Forbidden'); }
+if (!defined('SMARTPARK_BOOT')) {
+    http_response_code(403);
+    exit('Forbidden');
+}
+
 auth_require_role('super_admin','admin','supervisor','porteria','ronda');
 
-if ($_SERVER['REQUEST_METHOD'] !== 'POST') redirect('/revistas');
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') redirect('/vehiculos');
+
+// ───── HOTFIX CSRF: alias del campo si viene con otro nombre ─────
+if (empty($_POST['_csrf'])) {
+    if      (!empty($_POST['csrf_token']))            $_POST['_csrf'] = $_POST['csrf_token'];
+    elseif  (!empty($_POST['_token']))                $_POST['_csrf'] = $_POST['_token'];
+    elseif  (!empty($_SERVER['HTTP_X_CSRF_TOKEN']))   $_POST['_csrf'] = $_SERVER['HTTP_X_CSRF_TOKEN'];
+}
 csrf_require();
 
 $pdo = db();
@@ -15,116 +30,133 @@ $conjuntoId = (int)($u['conjunto_id'] ?? 1);
 $accion    = $_POST['accion'] ?? '';
 $seleccion = (array)($_POST['seleccion'] ?? []);
 
-if (!in_array($accion, ['eliminar', 'eliminar_imagenes'], true)) { flash_set('error', 'Acción inválida.'); redirect('/revistas'); }
-if (empty($seleccion))     { flash_set('error', 'No seleccionaste ninguna revista.'); redirect('/revistas'); }
-
-$ids = [];
-foreach ($seleccion as $item) {
-    if (is_array($item)) continue;
-    $id = (int)$item;
-    if ($id >= 1) $ids[] = $id;
+if (!in_array($accion, ['archivar', 'restaurar', 'eliminar'], true)) {
+    if (function_exists('flash_set')) flash_set('error', 'Acción no válida.');
+    redirect('/vehiculos');
 }
-if (empty($ids)) { flash_set('error', 'IDs inválidos.'); redirect('/revistas'); }
 
-$inList = implode(',', array_map('intval', $ids));
-$baseDir = (defined('UPLOADS_PATH') ? UPLOADS_PATH : __DIR__ . '/../../uploads') . '/revistas';
-
-// ─── ACCIÓN: eliminar solo imágenes (conserva los registros) ───
-if ($accion === 'eliminar_imagenes') {
-    $fotosBorradas = 0;
-    try {
-        // Validar que las revistas son del conjunto del usuario
-        $stChk = $pdo->prepare("SELECT id FROM revistas WHERE id IN ($inList) AND conjunto_id = :c");
-        $stChk->execute([':c' => $conjuntoId]);
-        $idsValidos = array_map('intval', $stChk->fetchAll(PDO::FETCH_COLUMN));
-
-        if (empty($idsValidos)) {
-            flash_set('error', 'Ninguna revista corresponde a tu conjunto.');
-        } else {
-            $inValid = implode(',', $idsValidos);
-
-            // Obtener foto_paths
-            $stF = $pdo->prepare("SELECT foto_path FROM revistas_detalle
-                                    WHERE revista_id IN ($inValid) AND foto_path IS NOT NULL");
-            $stF->execute();
-            foreach ($stF->fetchAll(PDO::FETCH_COLUMN) as $fp) {
-                $full = $baseDir . '/' . $fp;
-                if (is_file($full)) { @unlink($full); $fotosBorradas++; }
-            }
-
-            // Limpiar foto_path en BD (conservando el registro)
-            $pdo->prepare("UPDATE revistas_detalle SET foto_path = NULL
-                            WHERE revista_id IN ($inValid)")->execute();
-
-            // Intentar borrar carpetas vacías
-            foreach ($idsValidos as $rid) {
-                $revDir = $baseDir . '/' . $rid;
-                if (is_dir($revDir)) {
-                    $files = @scandir($revDir);
-                    if ($files !== false) {
-                        $vacio = true;
-                        foreach ($files as $f) if ($f !== '.' && $f !== '..') { $vacio = false; break; }
-                        if ($vacio) @rmdir($revDir);
-                    }
-                }
-            }
-
-            flash_set('ok', "Se eliminaron {$fotosBorradas} imagen(es) de " . count($idsValidos) . " revista(s). Los registros se conservan.");
-        }
-    } catch (Exception $ex) {
-        flash_set('error', (defined('APP_DEBUG') && APP_DEBUG) ? $ex->getMessage() : 'Error al eliminar imágenes.');
+// v7.62: el rol RONDA puede crear/editar/asignar, pero NO eliminar.
+if ($accion === 'eliminar') {
+    $__u = function_exists('auth_user') ? auth_user() : null;
+    $__roles = $__u['roles'] ?? [];
+    $__soloRonda = in_array('ronda', $__roles, true)
+        && !array_intersect($__roles, ['super_admin', 'admin', 'supervisor']);
+    if ($__soloRonda) {
+        if (function_exists('flash_set')) flash_set('error', 'Tu rol no puede eliminar registros.');
+        redirect('/vehiculos');
     }
-
-    $retorno = $_POST['return_url'] ?? '/revistas';
-    if (!is_string($retorno) || $retorno === '' || $retorno[0] !== '/' || substr($retorno, 0, 2) === '//') $retorno = '/revistas';
-    redirect($retorno);
 }
 
-// ─── ACCIÓN: eliminar revistas completas (original) ───
-$eliminadas = 0;
+if (empty($seleccion)) {
+    if (function_exists('flash_set')) flash_set('error', 'No seleccionaste ningún vehículo.');
+    redirect('/vehiculos');
+}
+
+// Parsear "origen:id"
+$idsRes = [];
+$idsVis = [];
+foreach ($seleccion as $item) {
+    if (!is_string($item)) continue;
+    if (!preg_match('/^(residente|visitante):(\d+)$/', $item, $m)) continue;
+    $id = (int)$m[2];
+    if ($id < 1) continue;
+    if ($m[1] === 'residente') $idsRes[] = $id;
+    else                       $idsVis[] = $id;
+}
+
+$total = count($idsRes) + count($idsVis);
+if ($total === 0) {
+    if (function_exists('flash_set')) flash_set('error', 'No se seleccionaron vehículos válidos.');
+    redirect('/vehiculos');
+}
+
+$afectados = 0;
+$msg = '';
 
 try {
     $pdo->beginTransaction();
 
-    // Borrar fotos de los detalles
-    $stF = $pdo->prepare("SELECT foto_path FROM revistas_detalle
-                          WHERE revista_id IN ($inList) AND foto_path IS NOT NULL");
-    $stF->execute();
-    foreach ($stF->fetchAll(PDO::FETCH_COLUMN) as $fp) {
-        $full = $baseDir . '/' . $fp;
-        if (is_file($full)) @unlink($full);
-    }
-
-    // Borrar detalles
-    $pdo->exec("DELETE FROM revistas_detalle WHERE revista_id IN ($inList)");
-
-    // Borrar carpetas
-    foreach ($ids as $rid) {
-        $revDir = $baseDir . '/' . $rid;
-        if (is_dir($revDir)) {
-            $files = @scandir($revDir);
-            if ($files !== false) {
-                foreach ($files as $f) {
-                    if ($f === '.' || $f === '..') continue;
-                    @unlink($revDir . '/' . $f);
-                }
-                @rmdir($revDir);
-            }
+    if ($accion === 'archivar') {
+        if (!empty($idsRes)) {
+            $inList = implode(',', array_map('intval', $idsRes));
+            $afectados += (int)$pdo->exec(
+                "UPDATE vehiculos
+                    SET archivado_en = NOW(),
+                        archivado_motivo = COALESCE(archivado_motivo, 'Archivado manual')
+                  WHERE id IN ($inList)
+                    AND conjunto_id = $conjuntoId
+                    AND archivado_en IS NULL"
+            );
         }
+        if (!empty($idsVis)) {
+            $inList = implode(',', array_map('intval', $idsVis));
+            $afectados += (int)$pdo->exec(
+                "UPDATE visitantes_vehiculos
+                    SET archivado_en = NOW()
+                  WHERE id IN ($inList)
+                    AND conjunto_id = $conjuntoId
+                    AND archivado_en IS NULL"
+            );
+        }
+        $msg = "Se archivaron $afectados vehículo(s).";
     }
-
-    // Borrar revistas (solo del conjunto)
-    $eliminadas = (int)$pdo->exec("DELETE FROM revistas WHERE id IN ($inList) AND conjunto_id = $conjuntoId");
+    elseif ($accion === 'restaurar') {
+        if (!empty($idsRes)) {
+            $inList = implode(',', array_map('intval', $idsRes));
+            $afectados += (int)$pdo->exec(
+                "UPDATE vehiculos
+                    SET archivado_en = NULL,
+                        archivado_motivo = NULL
+                  WHERE id IN ($inList)
+                    AND conjunto_id = $conjuntoId
+                    AND archivado_en IS NOT NULL"
+            );
+        }
+        if (!empty($idsVis)) {
+            $inList = implode(',', array_map('intval', $idsVis));
+            $afectados += (int)$pdo->exec(
+                "UPDATE visitantes_vehiculos
+                    SET archivado_en = NULL
+                  WHERE id IN ($inList)
+                    AND conjunto_id = $conjuntoId
+                    AND archivado_en IS NOT NULL"
+            );
+        }
+        $msg = "Se restauraron $afectados vehículo(s).";
+    }
+    elseif ($accion === 'eliminar') {
+        if (!empty($idsRes)) {
+            $inList = implode(',', array_map('intval', $idsRes));
+            $afectados += (int)$pdo->exec(
+                "DELETE FROM vehiculos
+                  WHERE id IN ($inList)
+                    AND conjunto_id = $conjuntoId"
+            );
+        }
+        if (!empty($idsVis)) {
+            $inList = implode(',', array_map('intval', $idsVis));
+            $afectados += (int)$pdo->exec(
+                "DELETE FROM visitantes_vehiculos
+                  WHERE id IN ($inList)
+                    AND conjunto_id = $conjuntoId"
+            );
+        }
+        $msg = "Se eliminaron PERMANENTEMENTE $afectados vehículo(s) de la BD.";
+    }
 
     $pdo->commit();
-    flash_set('ok', "Se eliminaron $eliminadas revista(s).");
-} catch (Exception $ex) {
+    if (function_exists('flash_set')) flash_set('success', $msg);
+}
+catch (Exception $e) {
     $pdo->rollBack();
-    flash_set('error', (defined('APP_DEBUG') && APP_DEBUG) ? $ex->getMessage() : 'Error al eliminar.');
+    $errMsg = (defined('APP_DEBUG') && APP_DEBUG)
+        ? ('Error: ' . $e->getMessage())
+        : 'Error al ejecutar la acción. No se hizo ningún cambio.';
+    if (function_exists('flash_set')) flash_set('error', $errMsg);
 }
 
-$retorno = $_POST['return_url'] ?? '/revistas';
-if (!is_string($retorno) || $retorno === '' || $retorno[0] !== '/' || substr($retorno, 0, 2) === '//') {
-    $retorno = '/revistas';
+$retorno = $_POST['return_url'] ?? '/vehiculos';
+if (!is_string($retorno) || strlen($retorno) === 0 || $retorno[0] !== '/' || substr($retorno, 0, 2) === '//') {
+    $retorno = '/vehiculos';
 }
 redirect($retorno);
