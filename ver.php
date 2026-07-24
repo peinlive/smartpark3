@@ -1,185 +1,187 @@
 <?php
-// /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php
-// v1.0 (3AG): Vista completa de una observación con todas sus evidencias.
-//   Aditivo: no modifica el módulo /observaciones existente.
-//   Se puede enlazar desde /observaciones/index.php agregando un botón:
-//     <a class="btn btn--sm" href="<?= url('/observaciones/ver?id=' . $obs['id']) ?>">👁️ Ver</a>
+// /home/myzonaco/smartpark.myzona360.com/modules/rondas/ver.php
+// Ver detalle de revista: grid de celdas con su estado + lecturas + acciones.
 
 if (!defined('SMARTPARK_BOOT')) { http_response_code(403); exit('Forbidden'); }
-auth_require_role('super_admin','admin','supervisor','porteria','ronda');
+require_once INCLUDES_PATH . '/upload_helpers.php';
+auth_require_role('super_admin','admin','supervisor','ronda','porteria');
 
-$pdo = db();
-$u   = auth_user();
-$conjuntoId = (int)($u['conjunto_id'] ?? 1);
-$esSuperAdmin = auth_has_role('super_admin');
+$pdo = db(); $u = auth_user();
+$conjuntoId = $u['conjunto_id'] ?? 1;
+$id = clean_int($_GET['id'] ?? null, 1);
+if (!$id) { flash_set('error', 'ID inválido.'); redirect('/rondas'); }
 
-$id = (int)($_GET['id'] ?? 0);
-if ($id < 1) { flash_set('error', 'ID inválido'); redirect('/observaciones'); }
-
-$labelsTipo = [
-    'mal_parqueo'  => '🚧 Mal parqueo',
-    'advertencia'  => '⚠️ Advertencia',
-    'reincidencia' => '🔁 Reincidencia',
-    'queja'        => '📢 Queja',
-    'otro'         => '📌 Otro',
-];
-
-// Cargar observación
-$st = $pdo->prepare("SELECT o.*, v.placa, v.tipo AS veh_tipo, v.foto_principal AS veh_foto,
-                            a.numero_visible AS apto, a.piso, t.numero AS torre,
-                            r.nombre AS residente_nombre, r.celular AS residente_celular,
-                            up.nombre_completo AS registrado_por
-                       FROM observaciones_vehiculo o
-                       JOIN vehiculos v      ON v.id = o.vehiculo_id
-                  LEFT JOIN apartamentos a   ON a.id = v.apartamento_id
-                  LEFT JOIN torres t         ON t.id = a.torre_id
-                  LEFT JOIN residentes r     ON r.id = v.residente_id
-                  LEFT JOIN usuarios up      ON up.id = o.usuario_registra
-                      WHERE o.id = :id AND v.conjunto_id = :c LIMIT 1");
+$st = $pdo->prepare("
+    SELECT r.*, us.nombre_completo AS usuario_nombre
+      FROM revistas r LEFT JOIN usuarios us ON us.id = r.usuario_id
+     WHERE r.id = :id AND r.conjunto_id = :c");
 $st->execute([':id' => $id, ':c' => $conjuntoId]);
-$o = $st->fetch();
-if (!$o) { flash_set('error', 'Observación no encontrada'); redirect('/observaciones'); }
+$revista = $st->fetch();
+if (!$revista) { flash_set('error', 'No encontrada.'); redirect('/rondas'); }
 
-// Evidencias adicionales
-$evidencias = [];
-try {
-    $stE = $pdo->prepare("SELECT id, tipo, archivo_url, creado_en FROM observaciones_evidencias
-                           WHERE observacion_id = :o ORDER BY creado_en ASC");
-    $stE->execute([':o' => $id]);
-    $evidencias = $stE->fetchAll();
-} catch (Exception $ex) { /* tabla no existe */ }
+// Cargar todas las celdas del nivel + su lectura en esta revista
+$celdas = $pdo->prepare("
+    SELECT c.id, c.numero_celda, c.es_privada, c.asignada_a_apto, c.orden,
+           l.id AS lectura_id, l.placa_detectada, l.confidence, l.celda_vacia,
+           l.foto_path, l.tipo_resultado, l.placa_manual, l.creado_en AS lectura_at,
+           CASE
+              WHEN l.vehiculo_id IS NOT NULL THEN va.numero_visible
+              WHEN l.visitante_id IS NOT NULL THEN via2.numero_visible
+              ELSE NULL
+           END AS apto_match
+      FROM parqueadero_celdas c
+ LEFT JOIN lecturas_placas l ON l.revista_id = :r AND l.celda = c.numero_celda
+ LEFT JOIN vehiculos v ON v.id = l.vehiculo_id
+ LEFT JOIN apartamentos va ON va.id = v.apartamento_id
+ LEFT JOIN visitantes_vehiculos vi ON vi.id = l.visitante_id
+ LEFT JOIN apartamentos via2 ON via2.id = vi.apartamento_id
+     WHERE c.conjunto_id = :c AND c.nivel = :n
+  ORDER BY c.orden, c.numero_celda
+");
+$celdas->execute([':r' => $id, ':c' => $conjuntoId, ':n' => $revista['nivel']]);
+$celdas = $celdas->fetchAll();
 
-$fotoOcr = $o['evidencia_url'] ? (strpos($o['evidencia_url'], 'http') === 0 ? $o['evidencia_url'] : '/uploads/' . ltrim($o['evidencia_url'], '/')) : null;
+$dur = '';
+if ($revista['terminado_en']) {
+    $dur = round((strtotime($revista['terminado_en']) - strtotime($revista['iniciado_en'])) / 60) . ' min';
+} elseif ($revista['estado'] === 'en_curso') {
+    $dur = round((time() - strtotime($revista['iniciado_en'])) / 60) . ' min (en curso)';
+}
 
-$_pageTitle = 'Detalle de observación';
+$_pageTitle = 'Revista ' . $revista['nivel'];
 include INCLUDES_PATH . '/header.php';
-
-$colorGrav = $o['gravedad'] === 'grave' ? '#991b1b' : ($o['gravedad'] === 'media' ? '#92400e' : '#166534');
-$bgGrav    = $o['gravedad'] === 'grave' ? '#fee2e2' : ($o['gravedad'] === 'media' ? '#fef3c7' : '#dcfce7');
 ?>
 
-<style>
-.obs-view-head{background:linear-gradient(135deg,<?= $colorGrav ?>, #4c1d95);color:#fff;border-radius:10px;padding:18px 22px;margin-top:12px;}
-.obs-view-head h1{margin:0;font-size:20px;}
-.obs-view-head .meta{margin-top:6px;font-size:12px;opacity:.9;}
+<div class="page-head">
+    <h1 class="page-head__title">🌙 Revista <?= e($revista['nivel']) ?> #<?= $id ?></h1>
+    <p class="page-head__sub">
+        <?= e(fecha_humana($revista['iniciado_en'])) ?> · por <?= e($revista['usuario_nombre'] ?? '—') ?> · <?= e($dur) ?>
+    </p>
+</div>
 
-.obs-card{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:18px 22px;margin:14px 0;box-shadow:0 1px 3px rgba(0,0,0,.03);}
-.obs-card h3{margin:0 0 10px;font-size:15px;color:#111827;padding-bottom:6px;border-bottom:2px solid #f3f4f6;}
+<?php if (!empty($_GET['completa'])): ?>
+    <div class="flash flash--ok">✓ ¡Revista terminada exitosamente!</div>
+<?php endif; ?>
 
-.grav-badge{display:inline-block;padding:6px 14px;background:<?= $bgGrav ?>;color:<?= $colorGrav ?>;border-radius:8px;font-weight:700;font-size:13px;text-transform:uppercase;letter-spacing:.5px;}
-
-.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;}
-.info-item{background:#f8fafc;padding:8px 12px;border-radius:6px;font-size:13px;}
-.info-item strong{display:block;color:#6b7280;font-size:10px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px;}
-@media(max-width:600px){.info-grid{grid-template-columns:1fr}}
-
-.evi-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-top:10px;}
-.evi-card{background:#f8fafc;border:1px solid #e5e7eb;border-radius:6px;padding:8px;text-align:center;cursor:zoom-in;transition:transform .1s;}
-.evi-card:hover{transform:translateY(-2px);border-color:#0e7490;}
-.evi-card img{width:100%;height:120px;object-fit:cover;border-radius:4px;}
-.evi-card .label{font-size:10px;color:#6b7280;margin-top:4px;}
-
-.lightbox{display:none;position:fixed;inset:0;background:rgba(0,0,0,.9);z-index:9999;align-items:center;justify-content:center;padding:20px;cursor:zoom-out;}
-.lightbox.abierto{display:flex;}
-.lightbox img{max-width:100%;max-height:100vh;object-fit:contain;}
-.lightbox-close{position:absolute;top:15px;right:20px;background:rgba(255,255,255,.15);border:none;color:#fff;font-size:24px;width:40px;height:40px;border-radius:50%;cursor:pointer;}
-</style>
-
-<div class="obs-view-head">
-    <a class="btn" href="#" onclick="window.history.back(); return false;">← Volver</a>
-    <h1>👁️ Detalle de observación #<?= (int)$o['id'] ?></h1>
-    <div class="meta">🕐 <?= e(date('d/m/Y H:i:s', strtotime($o['creado_en']))) ?>
-        <?php if ($o['registrado_por']): ?> · Registrada por: <strong><?= e($o['registrado_por']) ?></strong><?php endif; ?>
+<div class="cards">
+    <div class="card card--accent">
+        <div class="card__label">Total celdas</div>
+        <div class="card__value"><?= (int)$revista['total_celdas'] ?></div>
+    </div>
+    <div class="card">
+        <div class="card__label">Revisadas</div>
+        <div class="card__value"><?= (int)$revista['celdas_revisadas'] ?></div>
+    </div>
+    <div class="card">
+        <div class="card__label">🚗 Ocupadas</div>
+        <div class="card__value"><?= (int)$revista['celdas_ocupadas'] ?></div>
+    </div>
+    <div class="card">
+        <div class="card__label">🅿️ Vacías</div>
+        <div class="card__value"><?= (int)$revista['celdas_vacias'] ?></div>
+    </div>
+    <div class="card">
+        <div class="card__label">Estado</div>
+        <div class="card__value" style="font-size:16px">
+            <?php if ($revista['estado'] === 'en_curso'): ?><span class="pill pill--warn">🔄 En curso</span>
+            <?php elseif ($revista['estado'] === 'terminada'): ?><span class="pill pill--ok">✓ Terminada</span>
+            <?php else: ?><span class="pill pill--muted">✗ Cancelada</span><?php endif; ?>
+        </div>
     </div>
 </div>
 
 <div class="toolbar">
-    <a class="btn" href="<?= url('/observaciones') ?>">← Volver a observaciones</a>
-    <a class="btn" href="<?= url('/vehiculos/ver?id=' . (int)$o['vehiculo_id']) ?>">🚗 Ver vehículo</a>
-    <button type="button" class="btn" onclick="window.print()">🖨️ Imprimir</button>
-</div>
-
-<div class="obs-card">
-    <h3>📋 Datos del vehículo y apartamento</h3>
-    <div class="info-grid">
-        <div class="info-item"><strong>Placa</strong><span style="font-family:monospace;font-size:16px;font-weight:700"><?= e($o['placa']) ?></span></div>
-        <div class="info-item"><strong>Tipo</strong><?= $o['veh_tipo'] === 'moto' ? '🏍️ Moto' : '🚗 Carro' ?></div>
-        <div class="info-item"><strong>Apartamento</strong><?= e($o['apto'] ?: '—') ?> <span class="t-muted">(Torre <?= (int)$o['torre'] ?>)</span></div>
-        <div class="info-item"><strong>Residente</strong><?= e($o['residente_nombre'] ?: '—') ?>
-            <?php if ($o['residente_celular']): ?><br><small>📞 <?= e($o['residente_celular']) ?></small><?php endif; ?>
-        </div>
-    </div>
-</div>
-
-<div class="obs-card">
-    <h3>⚠️ Observación</h3>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
-        <span class="grav-badge"><?= e($labelsTipo[$o['tipo']] ?? $o['tipo']) ?></span>
-        <span class="grav-badge">Gravedad: <?= strtoupper(e($o['gravedad'])) ?></span>
-    </div>
-    <div style="background:#f8fafc;padding:14px;border-radius:6px;font-size:14px;color:#1f2937;white-space:pre-wrap;line-height:1.6">
-        <?= e($o['descripcion']) ?>
-    </div>
-</div>
-
-<?php
-$todasEvi = [];
-if ($fotoOcr) $todasEvi[] = ['url' => $fotoOcr, 'tipo' => 'foto', 'label' => 'Foto principal'];
-foreach ($evidencias as $e) {
-    $todasEvi[] = [
-        'url'   => strpos($e['archivo_url'], 'http') === 0 ? $e['archivo_url'] : '/uploads/' . ltrim($e['archivo_url'], '/'),
-        'tipo'  => $e['tipo'],
-        'label' => 'Adicional · ' . date('d/m/Y H:i', strtotime($e['creado_en'])),
-    ];
-}
-?>
-
-<div class="obs-card">
-    <h3>📎 Evidencias (<?= count($todasEvi) ?>)</h3>
-    <?php if (empty($todasEvi)): ?>
-        <div style="text-align:center;padding:20px;color:#9ca3af;font-size:13px">Sin evidencias adjuntas para esta observación.</div>
-    <?php else: ?>
-        <div class="evi-grid">
-            <?php foreach ($todasEvi as $ev): ?>
-                <?php if ($ev['tipo'] === 'foto'): ?>
-                    <div class="evi-card" onclick="obsAbrirLightbox('<?= e($ev['url']) ?>', '<?= e($ev['label']) ?>')">
-                        <img src="<?= e($ev['url']) ?>" alt="<?= e($ev['label']) ?>" onerror="this.style.display='none'">
-                        <div class="label">📸 <?= e($ev['label']) ?></div>
-                    </div>
-                <?php else: ?>
-                    <a href="<?= e($ev['url']) ?>" target="_blank" class="evi-card" style="display:flex;flex-direction:column;justify-content:center;text-decoration:none;color:inherit">
-                        <div style="font-size:48px">🎬</div>
-                        <div class="label">Video · <?= e($ev['label']) ?></div>
-                    </a>
-                <?php endif; ?>
-            <?php endforeach; ?>
-        </div>
+    <a class="btn" href="<?= url('/rondas') ?>">← Volver al listado</a>
+    <?php if ($revista['estado'] === 'en_curso' && (int)$revista['usuario_id'] === (int)$u['id']): ?>
+        <a class="btn btn--primary" href="<?= url('/rondas/ejecutar?id=' . $id) ?>">↪ Continuar revista</a>
+        <form method="post" action="<?= url('/rondas/terminar') ?>" style="display:inline"
+              onsubmit="return confirm('¿Terminar ahora? Las celdas no revisadas quedarán pendientes.');">
+            <?= csrf_field() ?><input type="hidden" name="id" value="<?= $id ?>">
+            <button type="submit" class="btn btn--primary">✓ Terminar revista</button>
+        </form>
     <?php endif; ?>
 </div>
 
-<div class="lightbox" id="obs-lightbox" onclick="obsCerrarLightbox()">
-    <img id="obs-lightbox-img" src="" alt="">
-    <div id="obs-lightbox-label" style="position:absolute;bottom:20px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.7);color:#fff;padding:8px 16px;border-radius:6px;font-family:monospace;font-size:13px"></div>
-    <button class="lightbox-close" onclick="obsCerrarLightbox()">✕</button>
+<h2 style="margin-top:24px;font-size:16px">Mapa de celdas</h2>
+<div class="celdas-grid">
+    <?php foreach ($celdas as $c):
+        $clase = 'is-pendiente';
+        if (!empty($c['lectura_id'])) {
+            if ((int)$c['celda_vacia'] === 1) $clase = 'is-vacia';
+            elseif ($c['tipo_resultado'] === 'residente') $clase = 'is-residente';
+            elseif ($c['tipo_resultado'] === 'visitante') $clase = 'is-visitante';
+            else $clase = 'is-desconocido';
+        }
+    ?>
+        <div class="celda-card <?= $clase ?>" <?php if (!empty($c['lectura_id'])): ?>
+             onclick="mostrarFoto('<?= e(url_foto($c['foto_path'])) ?>', '<?= e($c['placa_detectada']) ?>', '<?= e($c['numero_celda']) ?>')"
+             style="cursor:pointer"
+        <?php endif; ?>>
+            <div class="celda-num"><?= e($c['numero_celda']) ?></div>
+            <?php if ((int)$c['es_privada'] === 1): ?>
+                <div class="celda-tag">🔒</div>
+            <?php endif; ?>
+            <?php if (!empty($c['lectura_id'])): ?>
+                <?php if ((int)$c['celda_vacia'] === 1): ?>
+                    <div class="celda-plate">VACÍA</div>
+                <?php else: ?>
+                    <div class="celda-plate"><?= e($c['placa_detectada']) ?></div>
+                    <?php if ($c['apto_match']): ?>
+                        <div class="celda-apto">Apto <?= e($c['apto_match']) ?></div>
+                    <?php endif; ?>
+                <?php endif; ?>
+            <?php else: ?>
+                <div class="celda-plate">pendiente</div>
+            <?php endif; ?>
+        </div>
+    <?php endforeach; ?>
 </div>
 
-<script>
-function obsAbrirLightbox(url, label) {
-    document.getElementById('obs-lightbox-img').src = url;
-    document.getElementById('obs-lightbox-label').textContent = label || '';
-    document.getElementById('obs-lightbox').classList.add('abierto');
-}
-function obsCerrarLightbox() {
-    document.getElementById('obs-lightbox').classList.remove('abierto');
-    document.getElementById('obs-lightbox-img').src = '';
-}
-document.addEventListener('keydown', function(e){ if (e.key === 'Escape') obsCerrarLightbox(); });
-</script>
+<!-- Modal foto -->
+<div id="fotoModal" class="foto-modal" onclick="cerrarFoto()">
+    <div class="foto-modal-content">
+        <h3 id="fotoModalTitle"></h3>
+        <img id="fotoModalImg" alt="">
+    </div>
+</div>
 
-<style media="print">
-    .toolbar, .lightbox, header, footer, .sidebar { display:none !important; }
-    .obs-view-head { background:#4c1d95 !important; -webkit-print-color-adjust:exact; }
-    .evi-card img { max-height:200px; }
+<style>
+.celdas-grid{display:grid;grid-template-columns:repeat(auto-fill, minmax(120px, 1fr));
+    gap:8px;margin-top:12px;}
+.celda-card{background:#fff;border:2px solid var(--color-border);border-radius:8px;
+    padding:10px 8px;text-align:center;font-size:13px;transition:transform .1s;position:relative;}
+.celda-card:hover{transform:translateY(-2px);}
+.celda-num{font-weight:700;font-size:18px;}
+.celda-plate{margin-top:6px;font-weight:600;font-size:13px;letter-spacing:1px;}
+.celda-apto{font-size:11px;color:var(--color-muted);margin-top:2px;}
+.celda-tag{position:absolute;top:4px;right:4px;font-size:11px;}
+
+.celda-card.is-pendiente{background:#f9fafb;border-color:#e5e7eb;color:#9ca3af;}
+.celda-card.is-residente{background:#dbeafe;border-color:#60a5fa;}
+.celda-card.is-residente .celda-plate{color:#1e3a8a;}
+.celda-card.is-visitante{background:#fef3c7;border-color:#fbbf24;}
+.celda-card.is-visitante .celda-plate{color:#92400e;}
+.celda-card.is-desconocido{background:#fee2e2;border-color:#fca5a5;}
+.celda-card.is-desconocido .celda-plate{color:#991b1b;}
+.celda-card.is-vacia{background:#f3f4f6;border-color:#d1d5db;}
+.celda-card.is-vacia .celda-plate{color:#6b7280;}
+
+.foto-modal{display:none;position:fixed;top:0;left:0;right:0;bottom:0;
+    background:rgba(0,0,0,.85);z-index:9999;align-items:center;justify-content:center;padding:20px;cursor:pointer;}
+.foto-modal.is-open{display:flex;}
+.foto-modal-content{background:#fff;border-radius:12px;padding:20px;max-width:600px;width:100%;text-align:center;}
+.foto-modal-content h3{margin:0 0 12px;}
+.foto-modal-content img{max-width:100%;max-height:70vh;border-radius:8px;}
 </style>
+
+<script>
+function mostrarFoto(url, placa, celda) {
+    if (!url) return;
+    document.getElementById('fotoModalImg').src = url;
+    document.getElementById('fotoModalTitle').textContent = 'Celda ' + celda + ' · ' + placa;
+    document.getElementById('fotoModal').classList.add('is-open');
+}
+function cerrarFoto() { document.getElementById('fotoModal').classList.remove('is-open'); }
+</script>
 
 <?php include INCLUDES_PATH . '/footer.php'; ?>

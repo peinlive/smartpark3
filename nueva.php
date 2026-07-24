@@ -1,131 +1,150 @@
 <?php
-// /home/myzonaco/smartpark.myzona360.com/modules/importaciones/nueva.php
-// Paso 1: subir archivo Excel/CSV. Acepta tipo=residentes o tipo=vehiculos.
+// /home/myzonaco/smartpark.myzona360.com/modules/rondas/nueva.php
+// Iniciar nueva revista: seleccionar nivel + crear celdas si es la primera vez.
 
-if (!defined('SMARTPARK_BOOT')) {
-    http_response_code(403);
-    exit('Forbidden');
-}
+if (!defined('SMARTPARK_BOOT')) { http_response_code(403); exit('Forbidden'); }
+auth_require_role('super_admin','admin','supervisor','ronda','porteria');
 
-auth_require_role('super_admin','admin','supervisor');
+$pdo = db(); $u = auth_user();
+$conjuntoId = $u['conjunto_id'] ?? 1;
 
-$pdo = db();
-$u   = auth_user();
-
-$tipo = in_array($_GET['tipo'] ?? $_POST['tipo'] ?? '', ['residentes','vehiculos'], true)
-          ? ($_GET['tipo'] ?? $_POST['tipo']) : 'residentes';
-
+$niveles_validos = ['S98','S99','P1','P2','P3','P4'];
 $errores = [];
+
+// Si el usuario ya tiene una revista en curso, redirigir
+$st = $pdo->prepare("SELECT id, nivel FROM revistas
+                      WHERE conjunto_id = :c AND usuario_id = :u AND estado = 'en_curso' LIMIT 1");
+$st->execute([':c' => $conjuntoId, ':u' => $u['id']]);
+if ($r = $st->fetch()) {
+    flash_set('warn', "Ya tienes una revista en curso en nivel {$r['nivel']}. Termínala o cancélala antes de iniciar otra.");
+    redirect('/rondas/ejecutar?id=' . (int)$r['id']);
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_require();
+    $nivel = clean_string($_POST['nivel'] ?? '', 10);
+    $total_celdas = clean_int($_POST['total_celdas'] ?? null, 1, 500) ?? 65;
 
-    $file = $_FILES['archivo'] ?? null;
-    if (!$file || ($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
-        $errores[] = 'Debes seleccionar un archivo.';
-    } elseif (($file['size'] ?? 0) > 5 * 1024 * 1024) {
-        $errores[] = 'El archivo excede 5 MB.';
-    } else {
-        $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
-        if (!in_array($ext, ['xlsx','csv'], true)) {
-            $errores[] = 'El archivo debe ser .xlsx o .csv';
-        }
-    }
+    if (!in_array($nivel, $niveles_validos, true)) $errores[] = 'Nivel inválido.';
 
     if (empty($errores)) {
-        $importDir = UPLOADS_PATH . '/imports';
-        if (!is_dir($importDir)) @mkdir($importDir, 0755, true);
+        try {
+            $pdo->beginTransaction();
 
-        $token = bin2hex(random_bytes(8));
-        $ext   = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
-        $dest  = $importDir . '/' . $token . '.' . $ext;
+            // Verificar si ya existen celdas configuradas para este nivel
+            $sc = $pdo->prepare("SELECT COUNT(*) FROM parqueadero_celdas
+                                  WHERE conjunto_id = :c AND nivel = :n");
+            $sc->execute([':c' => $conjuntoId, ':n' => $nivel]);
+            $existentes = (int)$sc->fetchColumn();
 
-        if (!move_uploaded_file($file['tmp_name'], $dest)) {
-            $errores[] = 'No se pudo guardar el archivo subido.';
-        } else {
-            if (session_status() === PHP_SESSION_NONE) session_start();
-            $_SESSION['import'] = [
-                'tipo'         => $tipo,
-                'token'        => $token,
-                'ext'          => $ext,
-                'archivo_orig' => $file['name'],
-                'subido_en'    => time(),
-            ];
-            redirect('/importaciones/preview');
+            if ($existentes === 0) {
+                // Auto-crear celdas numeradas 01..N
+                $ins = $pdo->prepare("INSERT INTO parqueadero_celdas
+                        (conjunto_id, nivel, numero_celda, es_privada, orden)
+                    VALUES (:c, :n, :nu, 0, :o)");
+                for ($i = 1; $i <= $total_celdas; $i++) {
+                    $num = str_pad((string)$i, 2, '0', STR_PAD_LEFT);
+                    $ins->execute([':c' => $conjuntoId, ':n' => $nivel, ':nu' => $num, ':o' => $i]);
+                }
+                $celdasReales = $total_celdas;
+            } else {
+                $celdasReales = $existentes;
+            }
+
+            // Crear la revista
+            $ir = $pdo->prepare("INSERT INTO revistas
+                    (conjunto_id, nivel, usuario_id, total_celdas, estado, iniciado_en)
+                VALUES (:c, :n, :u, :tc, 'en_curso', NOW())");
+            $ir->execute([':c' => $conjuntoId, ':n' => $nivel, ':u' => $u['id'], ':tc' => $celdasReales]);
+            $revistaId = (int)$pdo->lastInsertId();
+
+            $pdo->commit();
+            flash_set('ok', "Revista #{$revistaId} iniciada en nivel {$nivel}.");
+            redirect('/rondas/ejecutar?id=' . $revistaId);
+        } catch (Exception $ex) {
+            $pdo->rollBack();
+            $errores[] = APP_DEBUG ? $ex->getMessage() : 'Error al iniciar la revista.';
         }
     }
 }
 
-$cols_residentes = ['apto','tipo','nombre','celular'];
-$cols_vehiculos  = ['apto','placa','usuario','observacion'];
-$cols_actuales   = $tipo === 'vehiculos' ? $cols_vehiculos : $cols_residentes;
+// Cuenta de celdas por nivel ya configuradas
+$niveles_config = $pdo->prepare("SELECT nivel, COUNT(*) AS c FROM parqueadero_celdas
+                                   WHERE conjunto_id = :c GROUP BY nivel");
+$niveles_config->execute([':c' => $conjuntoId]);
+$config_map = [];
+foreach ($niveles_config as $r) $config_map[$r['nivel']] = (int)$r['c'];
 
-$_pageTitle = 'Nueva importación de ' . $tipo;
+$_pageTitle = 'Nueva revista';
 include INCLUDES_PATH . '/header.php';
 ?>
 
 <div class="page-head">
-    <h1 class="page-head__title">Nueva importación de <?= e($tipo) ?></h1>
-    <p class="page-head__sub">Paso 1 de 3: Subir archivo Excel (.xlsx) o CSV.</p>
+    <h1 class="page-head__title">🌙 Nueva revista de parqueadero</h1>
+    <p class="page-head__sub">Selecciona el nivel para iniciar el recorrido.</p>
 </div>
 
 <?php if (!empty($errores)): ?>
     <div class="flash flash--error">
-        <ul style="margin:0 0 0 18px">
-            <?php foreach ($errores as $err): ?><li><?= e($err) ?></li><?php endforeach; ?>
-        </ul>
+        <ul style="margin:0 0 0 18px"><?php foreach ($errores as $e): ?><li><?= e($e) ?></li><?php endforeach; ?></ul>
     </div>
 <?php endif; ?>
 
-<form method="post" action="<?= url('/importaciones/nueva') ?>" enctype="multipart/form-data" class="form-grid">
+<form method="post" action="<?= url('/rondas/nueva') ?>" class="form-grid" style="max-width:500px">
     <?= csrf_field() ?>
-    <input type="hidden" name="tipo" value="<?= e($tipo) ?>">
-
     <div class="form-section">
-        <h3 class="form-section__title">Archivo</h3>
-
-        <label class="field">
-            <span>Selecciona el archivo (máximo 5 MB)</span>
-            <input type="file" name="archivo" accept=".xlsx,.csv" required>
-            <small class="field__hint">
-                Formatos: <strong>.xlsx</strong> (Excel) o <strong>.csv</strong> (UTF-8, ; o , como separador).
-                Columnas esperadas:
-                <?php foreach ($cols_actuales as $c): ?>
-                    <code><?= e($c) ?></code>
-                <?php endforeach; ?>
-            </small>
-        </label>
-
-        <div class="notice notice--info" style="margin-top:14px">
-            <strong>Reglas de importación:</strong>
-            <?php if ($tipo === 'residentes'): ?>
-                <ul style="margin:6px 0 0 18px">
-                    <li>Si el apto no existe en SmartPark, la fila se rechaza.</li>
-                    <li>Si ya existe un residente con el mismo apto + celular (o apto + nombre normalizado), se considera duplicado.</li>
-                    <li>Tipo: <code>inquilino</code>/<code>inqu</code> → inquilino; <code>propietario</code>/<code>prop</code> → propietario.</li>
-                </ul>
-            <?php else: ?>
-                <ul style="margin:6px 0 0 18px">
-                    <li>Si el apto no existe, la fila se rechaza.</li>
-                    <li>Si la placa ya existe activa, se considera duplicado (puedes elegir sobreescribir en el paso siguiente).</li>
-                    <li>Tipo de vehículo (carro/moto) se detecta automáticamente por formato de placa.</li>
-                    <li>Si la columna <code>usuario</code> trae nombre, se intenta vincular al residente existente del apto. Si no, queda sin residente y la <code>observacion</code> se guarda como nota.</li>
-                </ul>
-            <?php endif; ?>
+        <h3 class="form-section__title">Nivel a revisar</h3>
+        <div class="nivel-grid">
+            <?php foreach ($niveles_validos as $nv):
+                $c = $config_map[$nv] ?? 0; ?>
+                <label class="nivel-card">
+                    <input type="radio" name="nivel" value="<?= $nv ?>" required>
+                    <div class="nivel-card__inner">
+                        <strong><?= $nv ?></strong>
+                        <small><?= $c > 0 ? "{$c} celdas" : "sin configurar" ?></small>
+                    </div>
+                </label>
+            <?php endforeach; ?>
         </div>
+    </div>
 
-        <p style="margin-top:14px">
-            ¿No tienes plantilla?
-            <a href="<?= url('/importaciones/plantilla_' . $tipo) ?>">Descárgala aquí</a>.
-        </p>
+    <div class="form-section" id="primeraVezBox" style="display:none">
+        <h3 class="form-section__title">⚠️ Primera vez en este nivel</h3>
+        <p>Este nivel no tiene celdas configuradas. ¿Cuántas celdas tiene?</p>
+        <label class="field">
+            <span>Total de celdas</span>
+            <input type="number" name="total_celdas" min="1" max="500" value="65">
+            <small class="field__hint">Se crearán automáticamente numeradas 01 a N. Después puedes editar/marcar privadas en BD.</small>
+        </label>
     </div>
 
     <div class="form-actions">
-        <a class="btn" href="#" onclick="window.history.back(); return false;">← Volver</a>
-
-        <a class="btn" href="<?= url('/importaciones') ?>">Cancelar</a>
-        <button type="submit" class="btn btn--primary">Continuar →</button>
+        <a class="btn" href="<?= url('/rondas') ?>">Cancelar</a>
+        <button type="submit" class="btn btn--primary btn--lg">▶ Iniciar revista</button>
     </div>
 </form>
+
+<style>
+.nivel-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;}
+.nivel-card{cursor:pointer;}
+.nivel-card input{position:absolute;opacity:0;pointer-events:none;}
+.nivel-card__inner{padding:18px;border:2px solid var(--color-border);border-radius:10px;
+    text-align:center;background:#fff;transition:all .15s;}
+.nivel-card__inner strong{display:block;font-size:22px;}
+.nivel-card__inner small{display:block;color:var(--color-muted);margin-top:4px;font-size:12px;}
+.nivel-card input:checked + .nivel-card__inner{border-color:var(--color-primary);
+    background:#eff6ff;box-shadow:0 0 0 3px rgba(30,108,255,.12);}
+.btn--lg{padding:14px 28px;font-size:16px;}
+</style>
+
+<script>
+var configMap = <?= json_encode($config_map) ?>;
+document.querySelectorAll('input[name="nivel"]').forEach(function (r) {
+    r.addEventListener('change', function () {
+        var existe = (configMap[r.value] || 0) > 0;
+        document.getElementById('primeraVezBox').style.display = existe ? 'none' : 'block';
+    });
+});
+</script>
 
 <?php include INCLUDES_PATH . '/footer.php'; ?>

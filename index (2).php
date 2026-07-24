@@ -1,165 +1,119 @@
 <?php
-// /home/myzonaco/smartpark.myzona360.com/modules/visitantes/index.php
+// /home/myzonaco/smartpark.myzona360.com/index.php
+// Front Controller v1.8 (Entrega 3H - ordenamiento + dashboard vehículos + vínculo)
 
-if (!defined('SMARTPARK_BOOT')) { http_response_code(403); exit('Forbidden'); }
-require_once INCLUDES_PATH . '/upload_helpers.php';
-auth_require_role('super_admin','admin','supervisor','porteria','ronda');
+define('SMARTPARK_BOOT', true);
 
-$pdo = db();
-$u   = auth_user();
-$conjuntoId = $u['conjunto_id'] ?? 1;
+require __DIR__ . '/config/app.php';
+require __DIR__ . '/config/db.php';
+require __DIR__ . '/includes/helpers.php';
+require __DIR__ . '/includes/csrf.php';
+require __DIR__ . '/includes/auth.php';
 
-$f_placa = clean_string($_GET['placa'] ?? '', 15);
-$f_apto  = clean_string($_GET['apto']  ?? '', 20);
-$f_torre = clean_int($_GET['torre']   ?? null, 1, 99);
-$f_tipo  = in_array($_GET['tipo']  ?? '', ['carro','moto'], true) ? $_GET['tipo'] : '';
-$f_vista = in_array($_GET['vista'] ?? '', ['activos','archivados','recurrentes','todos'], true) ? $_GET['vista'] : 'activos';
+$route = $_GET['route'] ?? '';
+$route = trim((string)$route, '/');
+$route = strtolower(preg_replace('#[^a-z0-9/_.-]#i', '', $route));
 
-$pagina = max(1, (int)($_GET['p'] ?? 1));
-$porPagina = 50;
-$offset = ($pagina - 1) * $porPagina;
-
-$where = ['v.conjunto_id = :cid'];
-$params = [':cid' => $conjuntoId];
-if ($f_placa !== '') { $where[] = 'v.placa LIKE :placa'; $params[':placa'] = '%' . normalizar_placa($f_placa) . '%'; }
-if ($f_apto !== '')  { $where[] = 'a.numero_visible LIKE :apto'; $params[':apto'] = '%' . $f_apto . '%'; }
-if ($f_torre !== null) { $where[] = 't.numero = :torre'; $params[':torre'] = $f_torre; }
-if ($f_tipo !== '')  { $where[] = 'v.tipo = :tipo'; $params[':tipo'] = $f_tipo; }
-switch ($f_vista) {
-    case 'activos':     $where[] = 'v.archivado_en IS NULL'; break;
-    case 'archivados':  $where[] = 'v.archivado_en IS NOT NULL'; break;
-    case 'recurrentes': $where[] = 'v.archivado_en IS NULL AND v.recurrente = 1'; break;
+if ($route === 'manifest.json') {
+    header('Content-Type: application/manifest+json; charset=utf-8');
+    header('Cache-Control: public, max-age=3600');
+    readfile(__DIR__ . '/manifest.json');
+    exit;
 }
-$whereSql = implode(' AND ', $where);
+if ($route === 'sw.js') {
+    header('Content-Type: application/javascript; charset=utf-8');
+    header('Service-Worker-Allowed: /');
+    header('Cache-Control: no-cache');
+    readfile(__DIR__ . '/sw.js');
+    exit;
+}
 
-$sqlC = "SELECT COUNT(*) FROM visitantes_vehiculos v
-         JOIN apartamentos a ON a.id = v.apartamento_id
-         JOIN torres t ON t.id = a.torre_id WHERE $whereSql";
-$stC = $pdo->prepare($sqlC); $stC->execute($params);
-$total = (int)$stC->fetchColumn();
-$totalPag = max(1, (int)ceil($total / $porPagina));
+if ($route === '' || $route === 'index.php') {
+    redirect(auth_check() ? '/dashboard' : '/login');
+}
 
-$sql = "SELECT v.*, a.numero_visible AS apto_numero, t.numero AS torre_numero
-          FROM visitantes_vehiculos v
-          JOIN apartamentos a ON a.id = v.apartamento_id
-          JOIN torres t ON t.id = a.torre_id
-         WHERE $whereSql
-      ORDER BY v.ultima_visita DESC, v.creado_en DESC
-         LIMIT $porPagina OFFSET $offset";
-$st = $pdo->prepare($sql); $st->execute($params);
-$visitantes = $st->fetchAll();
+$routes = [
+    'login' => MODULES_PATH . '/auth/login.php',
+    'logout' => MODULES_PATH . '/auth/logout.php',
+    'dashboard' => MODULES_PATH . '/dashboard/index.php',
 
-$torres = $pdo->prepare("SELECT id, numero FROM torres WHERE conjunto_id = :c AND activo = 1 ORDER BY numero");
-$torres->execute([':c' => $conjuntoId]);
-$torres = $torres->fetchAll();
+    'residentes'            => MODULES_PATH . '/residentes/index.php',
+    'residentes/crear'      => MODULES_PATH . '/residentes/crear.php',
+    'residentes/ver'        => MODULES_PATH . '/residentes/ver.php',
+    'residentes/editar'     => MODULES_PATH . '/residentes/editar.php',
+    'residentes/mudanza'    => MODULES_PATH . '/residentes/mudanza.php',
+    'residentes/restaurar'  => MODULES_PATH . '/residentes/restaurar.php',
 
-$_pageTitle = 'Visitantes';
-include INCLUDES_PATH . '/header.php';
-?>
+    'vehiculos'             => MODULES_PATH . '/vehiculos/index.php',
+    'vehiculos/crear'       => MODULES_PATH . '/vehiculos/crear.php',
+    'vehiculos/ver'         => MODULES_PATH . '/vehiculos/ver.php',
+    'vehiculos/editar'      => MODULES_PATH . '/vehiculos/editar.php',
+    'vehiculos/archivar'    => MODULES_PATH . '/vehiculos/archivar.php',
+    'vehiculos/restaurar'   => MODULES_PATH . '/vehiculos/restaurar.php',
 
-<div class="page-head">
-    <h1 class="page-head__title">Visitantes</h1>
-    <p class="page-head__sub"><?= $total ?> resultado<?= $total === 1 ? '' : 's' ?>.</p>
-</div>
+    'visitantes'            => MODULES_PATH . '/visitantes/index.php',
+    'visitantes/crear'      => MODULES_PATH . '/visitantes/crear.php',
+    'visitantes/ver'        => MODULES_PATH . '/visitantes/ver.php',
+    'visitantes/editar'     => MODULES_PATH . '/visitantes/editar.php',
+    'visitantes/archivar'   => MODULES_PATH . '/visitantes/archivar.php',
+    'visitantes/restaurar'  => MODULES_PATH . '/visitantes/restaurar.php',
+    'visitantes/visita_mas' => MODULES_PATH . '/visitantes/visita_mas.php',
 
-<div class="toolbar">
-    <a class="btn" href="#" onclick="window.history.back(); return false;">← Volver</a>
-    <a class="btn btn--primary" href="<?= url('/visitantes/crear') ?>">+ Registrar visita</a>
-    <a class="btn" href="<?= url('/consultas') ?>">🔍 Consulta rápida por placa</a>
-    
-</div>
+    'consultas'             => MODULES_PATH . '/consultas/index.php',
+    'lecturas'              => MODULES_PATH . '/lecturas/index.php',
 
-<form method="get" action="<?= url('/visitantes') ?>" class="filters">
-    <input type="text" name="placa" placeholder="Placa" value="<?= e($f_placa) ?>" maxlength="15">
-    <input type="text" name="apto" placeholder="Apto" value="<?= e($f_apto) ?>" maxlength="20">
-    <select name="torre">
-        <option value="">Todas las torres</option>
-        <?php foreach ($torres as $t): ?>
-            <option value="<?= (int)$t['numero'] ?>" <?= $f_torre === (int)$t['numero'] ? 'selected' : '' ?>>Torre <?= (int)$t['numero'] ?></option>
-        <?php endforeach; ?>
-    </select>
-    <select name="tipo">
-        <option value="">Todos</option>
-        <option value="carro" <?= $f_tipo === 'carro' ? 'selected' : '' ?>>🚗 Carro</option>
-        <option value="moto" <?= $f_tipo === 'moto' ? 'selected' : '' ?>>🏍️ Moto</option>
-    </select>
-    <select name="vista">
-        <option value="activos"     <?= $f_vista === 'activos'     ? 'selected' : '' ?>>✓ Activos</option>
-        <option value="recurrentes" <?= $f_vista === 'recurrentes' ? 'selected' : '' ?>>⭐ Recurrentes</option>
-        <option value="archivados"  <?= $f_vista === 'archivados'  ? 'selected' : '' ?>>📁 Archivados</option>
-        <option value="todos"       <?= $f_vista === 'todos'       ? 'selected' : '' ?>>Todos</option>
-    </select>
-    <button type="submit" class="btn btn--primary">Filtrar</button>
-    <a class="btn" href="<?= url('/visitantes') ?>">Limpiar</a>
-</form>
+    'rondas'                => MODULES_PATH . '/rondas/index.php',
+    'rondas/nueva'          => MODULES_PATH . '/rondas/nueva.php',
+    'rondas/ejecutar'       => MODULES_PATH . '/rondas/ejecutar.php',
+    'rondas/ver'            => MODULES_PATH . '/rondas/ver.php',
+    'rondas/terminar'       => MODULES_PATH . '/rondas/terminar.php',
+    'rondas/sincronizar'    => MODULES_PATH . '/rondas/sincronizar.php',
 
-<?php if (empty($visitantes)): ?>
-    <div class="notice notice--info">No hay visitantes registrados con esos filtros.</div>
-<?php else: ?>
-    <div class="table-wrap">
-    <table class="data-table">
-        <thead>
-            <tr>
-                <th>Placa</th><th>Tipo</th><th>Apto que visita</th><th>Visitante</th>
-                <th>Visitas</th><th>Última</th><th>Estado</th><th class="t-right">Acciones</th>
-            </tr>
-        </thead>
-        <tbody>
-        <?php foreach ($visitantes as $v): ?>
-            <tr>
-                <td><strong><?= e($v['placa']) ?></strong></td>
-                <td><?= $v['tipo'] === 'moto' ? '🏍️ Moto' : '🚗 Carro' ?></td>
-                <td>
-                    <strong><?= e($v['apto_numero']) ?></strong>
-                    <span class="t-muted">T<?= (int)$v['torre_numero'] ?></span>
-                </td>
-                <td>
-                    <?= e($v['nombre_visitante'] ?: '—') ?>
-                    <?php if ($v['parentesco']): ?>
-                        <br><small class="t-muted"><?= e($v['parentesco']) ?></small>
-                    <?php endif; ?>
-                </td>
-                <td>
-                    <?php if ((int)$v['recurrente'] === 1): ?>
-                        ⭐ <strong><?= (int)$v['visitas_count'] ?></strong>
-                    <?php else: ?>
-                        <?= (int)$v['visitas_count'] ?>
-                    <?php endif; ?>
-                </td>
-                <td><small><?= e(fecha_humana($v['ultima_visita'])) ?></small></td>
-                <td>
-                    <?php if ($v['archivado_en']): ?><span class="pill pill--muted">📁 Archivado</span>
-                    <?php elseif ((int)$v['recurrente'] === 1): ?><span class="pill pill--info">⭐ Recurrente</span>
-                    <?php else: ?><span class="pill pill--ok">Activo</span><?php endif; ?>
-                </td>
-                <td class="t-right">
-                    <a class="btn btn--sm" href="<?= url('/visitantes/ver?id=' . (int)$v['id']) ?>">Ver</a>
-                    <?php if (!$v['archivado_en']): ?>
-                        <form method="post" action="<?= url('/visitantes/visita_mas') ?>" style="display:inline">
-                            <?= csrf_field() ?>
-                            <input type="hidden" name="id" value="<?= (int)$v['id'] ?>">
-                            <button type="submit" class="btn btn--sm" title="Marcar nueva visita">+1</button>
-                        </form>
-                    <?php endif; ?>
-                </td>
-            </tr>
-        <?php endforeach; ?>
-        </tbody>
-    </table>
-    </div>
+    'importaciones'                       => MODULES_PATH . '/importaciones/index.php',
+    'importaciones/nueva'                 => MODULES_PATH . '/importaciones/nueva.php',
+    'importaciones/preview'               => MODULES_PATH . '/importaciones/preview.php',
+    'importaciones/confirmar'             => MODULES_PATH . '/importaciones/confirmar.php',
+    'importaciones/resultado'             => MODULES_PATH . '/importaciones/resultado.php',
+    'importaciones/detalle'               => MODULES_PATH . '/importaciones/detalle.php',
+    'importaciones/plantilla_residentes'  => MODULES_PATH . '/importaciones/plantilla_residentes.php',
+    'importaciones/plantilla_vehiculos'   => MODULES_PATH . '/importaciones/plantilla_vehiculos.php',
 
-    <?php if ($totalPag > 1): ?>
-        <nav class="pager">
-            <?php $qs = $_GET; unset($qs['p']);
-            $base = url('/visitantes') . '?' . http_build_query($qs);
-            $sep = $qs ? '&' : '';
-            for ($i = 1; $i <= $totalPag; $i++):
-                if ($i === $pagina): ?><span class="pager__item is-active"><?= $i ?></span>
-                <?php else: ?><a class="pager__item" href="<?= $base . $sep ?>p=<?= $i ?>"><?= $i ?></a>
-                <?php endif; ?>
-            <?php endfor; ?>
-        </nav>
-    <?php endif; ?>
-<?php endif; ?>
+    'api/search_apto'          => BASE_PATH . '/api/search_apto.php',
+    'api/search_placa'         => BASE_PATH . '/api/search_placa.php',
+    'api/residentes_apto'      => BASE_PATH . '/api/residentes_apto.php',
+    'api/vehiculos_apto'       => BASE_PATH . '/api/vehiculos_apto.php',
+    'api/dashboard_vehiculos'  => BASE_PATH . '/api/dashboard_vehiculos.php', // ← NUEVA v3h
+    'api/ocr_placa'            => BASE_PATH . '/api/ocr_placa.php',
+    'api/rondas_paso'          => BASE_PATH . '/api/rondas_paso.php',
+    'api/lecturas_batch'       => BASE_PATH . '/api/lecturas_batch.php',
+    'api/icon'                 => BASE_PATH . '/api/icon.php',
+];
 
-<?php include INCLUDES_PATH . '/footer.php'; ?>
+if (isset($routes[$route])) { require $routes[$route]; exit; }
+
+$placeholders = ['apartamentos','parqueadero','asignaciones',
+                 'observaciones','usuarios','conjuntos','auditoria'];
+
+if (in_array($route, $placeholders, true)) {
+    auth_require();
+    $_pageTitle = ucfirst($route);
+    include INCLUDES_PATH . '/header.php';
+    echo '<div class="page-head"><h1 class="page-head__title">' . e($_pageTitle) . '</h1></div>';
+    echo '<div class="notice notice--info">Esta sección estará disponible en la próxima entrega.</div>';
+    include INCLUDES_PATH . '/footer.php';
+    exit;
+}
+
+http_response_code(404);
+if (auth_check()) {
+    $_pageTitle = 'No encontrado';
+    include INCLUDES_PATH . '/header.php';
+    echo '<div class="page-head"><h1 class="page-head__title">404</h1></div>';
+    echo '<div class="notice notice--error">La ruta <code>/' . e($route) . '</code> no existe.</div>';
+    include INCLUDES_PATH . '/footer.php';
+} else {
+    echo '<!DOCTYPE html><html lang="es"><meta charset="UTF-8"><title>404</title>';
+    echo '<body style="font-family:system-ui;padding:40px;text-align:center;">';
+    echo '<h1 style="font-size:64px;margin:0">404</h1>';
+    echo '<p><a href="' . url('/login') . '">Ir al login</a></p></body></html>';
+}

@@ -1,151 +1,194 @@
 <?php
-// /home/myzonaco/smartpark.myzona360.com/modules/configuracion/index.php
-// v1.0 (3AK): Landing del módulo Configuración.
-//   Agrupa TODA la configuración del sistema.
-//   Solo super_admin y admin.
+// /home/myzonaco/smartpark.myzona360.com/modules/lecturas/index.php
+// Historial de lecturas de placa por OCR.
 
 if (!defined('SMARTPARK_BOOT')) { http_response_code(403); exit('Forbidden'); }
-auth_require_role('super_admin','admin');
+require_once INCLUDES_PATH . '/upload_helpers.php';
+auth_require_role('super_admin','admin','supervisor','porteria','ronda');
 
-$u = auth_user();
-$conjuntoId = (int)($u['conjunto_id'] ?? 1);
-$esSuperAdmin = auth_has_role('super_admin');
+$pdo = db(); $u = auth_user();
+$conjuntoId = $u['conjunto_id'] ?? 1;
 
-// Estado de cada configuración (para mostrar en las tarjetas)
-$baseUploads = defined('UPLOADS_PATH') ? UPLOADS_PATH : __DIR__ . '/../../uploads';
+$f_placa  = clean_string($_GET['placa']  ?? '', 15);
+$f_fuente = in_array($_GET['fuente'] ?? '', ['consulta','revista','porteria','manual'], true) ? $_GET['fuente'] : '';
+$f_tipo   = in_array($_GET['tipo']   ?? '', ['residente','visitante','no_encontrado'], true) ? $_GET['tipo'] : '';
+$f_desde  = clean_string($_GET['desde'] ?? '', 10);
+$f_hasta  = clean_string($_GET['hasta'] ?? '', 10);
+$f_nivel  = clean_string($_GET['nivel'] ?? '', 10);
 
-// ── Config portería ──
-$porteriaOk = false;
-$porteriaNum = '';
-$porteriaAdicionales = 0;
-$archPorteria = $baseUploads . '/config/porteria_' . $conjuntoId . '.json';
-if (is_file($archPorteria)) {
-    $cfg = json_decode(@file_get_contents($archPorteria), true);
-    if (is_array($cfg) && !empty($cfg['numero_principal'])) {
-        $porteriaOk = true;
-        $porteriaNum = $cfg['numero_principal'];
-        $porteriaAdicionales = count($cfg['numeros_adicionales'] ?? []);
-    }
+$pagina = max(1, (int)($_GET['p'] ?? 1));
+$porPagina = 50;
+$offset = ($pagina - 1) * $porPagina;
+
+$where = ['l.conjunto_id = :cid'];
+$params = [':cid' => $conjuntoId];
+
+if ($f_placa !== '') {
+    $where[] = 'l.placa_detectada LIKE :placa';
+    $params[':placa'] = '%' . strtoupper(preg_replace('/[^A-Z0-9]/','', strtoupper($f_placa))) . '%';
 }
+if ($f_fuente !== '') { $where[] = 'l.fuente = :fu'; $params[':fu'] = $f_fuente; }
+if ($f_tipo !== '')   { $where[] = 'l.tipo_resultado = :tp'; $params[':tp'] = $f_tipo; }
+if ($f_nivel !== '')  { $where[] = 'l.nivel = :ni'; $params[':ni'] = $f_nivel; }
+if ($f_desde !== '')  { $where[] = 'DATE(l.creado_en) >= :d1'; $params[':d1'] = $f_desde; }
+if ($f_hasta !== '')  { $where[] = 'DATE(l.creado_en) <= :d2'; $params[':d2'] = $f_hasta; }
 
-$_pageTitle = 'Configuración';
+$whereSql = implode(' AND ', $where);
+
+$sqlC = "SELECT COUNT(*) FROM lecturas_placas l WHERE $whereSql";
+$stC = $pdo->prepare($sqlC); $stC->execute($params);
+$total = (int)$stC->fetchColumn();
+$totalPag = max(1, (int)ceil($total / $porPagina));
+
+$sql = "SELECT l.*, us.nombre_completo AS usuario_nombre,
+               v.placa AS veh_placa, va.numero_visible AS veh_apto,
+               vi.placa AS vis_placa, via2.numero_visible AS vis_apto
+          FROM lecturas_placas l
+     LEFT JOIN usuarios us ON us.id = l.usuario_id
+     LEFT JOIN vehiculos v ON v.id = l.vehiculo_id
+     LEFT JOIN apartamentos va ON va.id = v.apartamento_id
+     LEFT JOIN visitantes_vehiculos vi ON vi.id = l.visitante_id
+     LEFT JOIN apartamentos via2 ON via2.id = vi.apartamento_id
+         WHERE $whereSql
+      ORDER BY l.creado_en DESC
+         LIMIT $porPagina OFFSET $offset";
+$st = $pdo->prepare($sql); $st->execute($params);
+$lecturas = $st->fetchAll();
+
+// Stats globales del día
+$stStats = $pdo->prepare("
+    SELECT
+        SUM(CASE WHEN tipo_resultado='residente' THEN 1 ELSE 0 END) AS res,
+        SUM(CASE WHEN tipo_resultado='visitante' THEN 1 ELSE 0 END) AS vis,
+        SUM(CASE WHEN tipo_resultado='no_encontrado' THEN 1 ELSE 0 END) AS nf,
+        COUNT(*) AS total
+      FROM lecturas_placas
+     WHERE conjunto_id = :c AND DATE(creado_en) = CURDATE()");
+$stStats->execute([':c' => $conjuntoId]);
+$stats = $stStats->fetch();
+
+$_pageTitle = 'Lecturas de placa';
 include INCLUDES_PATH . '/header.php';
 ?>
 
-<style>
-.cfg-head{background:linear-gradient(135deg,#166534,#059669);color:#fff;border-radius:10px;padding:20px 24px;margin-top:12px;}
-.cfg-head h1{margin:0;font-size:22px;}
-.cfg-head p{margin:6px 0 0;font-size:13px;opacity:.9;}
+<div class="page-head">
+    <h1 class="page-head__title">📷 Lecturas de placa (OCR)</h1>
+    <p class="page-head__sub"><?= $total ?> lectura<?= $total === 1 ? '' : 's' ?> · Historial de revistas y consultas con foto.</p>
+</div>
 
-.cfg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px;margin:16px 0;}
-.cfg-card{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:18px 20px;text-decoration:none;color:inherit;transition:all .15s;display:flex;flex-direction:column;gap:8px;box-shadow:0 1px 3px rgba(0,0,0,.03);position:relative;overflow:hidden;}
-.cfg-card:hover{transform:translateY(-2px);box-shadow:0 6px 16px rgba(0,0,0,.08);border-color:#059669;}
-.cfg-card .icon{font-size:32px;line-height:1;}
-.cfg-card h3{margin:0;font-size:15px;color:#111827;}
-.cfg-card p{margin:0;font-size:12px;color:#6b7280;line-height:1.5;}
-.cfg-card .estado{display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:3px 10px;border-radius:10px;font-weight:600;align-self:flex-start;margin-top:4px;}
-.cfg-card .estado.ok{background:#dcfce7;color:#166534;}
-.cfg-card .estado.warn{background:#fef3c7;color:#92400e;}
-.cfg-card .estado.info{background:#dbeafe;color:#1e40af;}
-.cfg-card .tag{position:absolute;top:12px;right:12px;background:#f5f3ff;color:#7c3aed;font-size:9px;padding:2px 6px;border-radius:6px;font-weight:700;letter-spacing:.3px;}
-.cfg-card.soon{opacity:.55;pointer-events:none;background:#fafafa;}
-.cfg-card.soon .tag{background:#f3f4f6;color:#6b7280;}
-</style>
-
-<div class="cfg-head">
-    <h1>⚙️ Configuración del sistema</h1>
-    <p>Ajustes generales del conjunto. Todo lo que se configura una sola vez o de forma esporádica vive aquí.</p>
+<div class="cards">
+    <div class="card card--accent">
+        <div class="card__label">Hoy total</div>
+        <div class="card__value"><?= (int)$stats['total'] ?></div>
+    </div>
+    <div class="card">
+        <div class="card__label">🏠 Residentes</div>
+        <div class="card__value"><?= (int)$stats['res'] ?></div>
+    </div>
+    <div class="card">
+        <div class="card__label">👥 Visitantes</div>
+        <div class="card__value"><?= (int)$stats['vis'] ?></div>
+    </div>
+    <div class="card <?= (int)$stats['nf']>0?'card--warn':'' ?>">
+        <div class="card__label">❓ No encontrados</div>
+        <div class="card__value"><?= (int)$stats['nf'] ?></div>
+    </div>
 </div>
 
 <div class="toolbar">
-    <a class="btn" href="<?= url('/administracion') ?>">← Volver a administración</a>
-    <a class="btn" href="<?= url('/consultas') ?>">🔍 Ir a consulta rápida</a>
+    <a class="btn btn--primary" href="<?= url('/consultas') ?>">📷 Nueva lectura</a>
 </div>
 
-<div class="cfg-grid">
+<form method="get" action="<?= url('/lecturas') ?>" class="filters">
+    <input type="text" name="placa" placeholder="Placa" value="<?= e($f_placa) ?>" maxlength="15">
+    <select name="fuente">
+        <option value="">Todas las fuentes</option>
+        <option value="consulta" <?= $f_fuente === 'consulta' ? 'selected' : '' ?>>Consulta</option>
+        <option value="revista"  <?= $f_fuente === 'revista'  ? 'selected' : '' ?>>Revista parqueadero</option>
+        <option value="porteria" <?= $f_fuente === 'porteria' ? 'selected' : '' ?>>Portería</option>
+    </select>
+    <select name="tipo">
+        <option value="">Todos los resultados</option>
+        <option value="residente"     <?= $f_tipo === 'residente'     ? 'selected' : '' ?>>🏠 Residentes</option>
+        <option value="visitante"     <?= $f_tipo === 'visitante'     ? 'selected' : '' ?>>👥 Visitantes</option>
+        <option value="no_encontrado" <?= $f_tipo === 'no_encontrado' ? 'selected' : '' ?>>❓ No encontrados</option>
+    </select>
+    <input type="text" name="nivel" placeholder="Nivel (P2)" value="<?= e($f_nivel) ?>" maxlength="10">
+    <input type="date" name="desde" value="<?= e($f_desde) ?>" title="Desde">
+    <input type="date" name="hasta" value="<?= e($f_hasta) ?>" title="Hasta">
+    <button type="submit" class="btn btn--primary">Filtrar</button>
+    <a class="btn" href="<?= url('/lecturas') ?>">Limpiar</a>
+</form>
 
-    <!-- v3AL: Configuración de portería descontinuada.
-         Al compartir por WhatsApp ahora se abre el WhatsApp del usuario,
-         que elige el destinatario en cada envío. -->
-    <div class="cfg-card soon" style="pointer-events:auto;opacity:1">
-        <span class="tag" style="background:#dcfce7;color:#166534">✓ SIMPLIFICADO</span>
-        <div class="icon">📱</div>
-        <h3>Compartir por WhatsApp</h3>
-        <p>Ya no requiere configuración. Al compartir una novedad o reporte, WhatsApp te preguntará a quién enviar (portería, admin, supervisor, etc.).</p>
-        <span class="estado ok">✓ Sin configuración necesaria</span>
+<?php if (empty($lecturas)): ?>
+    <div class="notice notice--info">No hay lecturas con esos filtros.</div>
+<?php else: ?>
+    <div class="table-wrap">
+    <table class="data-table data-table--compact">
+        <thead>
+            <tr>
+                <th>Foto</th><th>Placa</th><th>Conf.</th><th>Resultado</th>
+                <th>Apto</th><th>Fuente</th><th>Nivel/Celda</th>
+                <th>Usuario</th><th>Fecha</th>
+            </tr>
+        </thead>
+        <tbody>
+        <?php foreach ($lecturas as $l): ?>
+            <tr>
+                <td>
+                    <?php if (!empty($l['foto_path'])): ?>
+                        <a href="<?= e(url_foto($l['foto_path'])) ?>" target="_blank" title="Ver foto">
+                            <img src="<?= e(url_foto($l['foto_path'])) ?>" alt="" class="row-thumb">
+                        </a>
+                    <?php else: ?>
+                        <span class="row-thumb row-thumb--empty">📷</span>
+                    <?php endif; ?>
+                </td>
+                <td><strong><?= e($l['placa_detectada']) ?></strong></td>
+                <td>
+                    <?php $c = (float)$l['confidence']; ?>
+                    <?php if ($c >= 0.85): ?><span class="pill pill--ok"><?= round($c*100) ?>%</span>
+                    <?php elseif ($c >= 0.60): ?><span class="pill pill--warn"><?= round($c*100) ?>%</span>
+                    <?php else: ?><span class="pill pill--danger"><?= round($c*100) ?>%</span><?php endif; ?>
+                </td>
+                <td>
+                    <?php if ($l['tipo_resultado'] === 'residente'): ?>
+                        <span class="pill pill--info">🏠 Residente</span>
+                        <?php if ($l['vehiculo_id']): ?>
+                            <br><a href="<?= url('/vehiculos/ver?id=' . (int)$l['vehiculo_id']) ?>" style="font-size:12px">Ver vehículo</a>
+                        <?php endif; ?>
+                    <?php elseif ($l['tipo_resultado'] === 'visitante'): ?>
+                        <span class="pill pill--warn">👥 Visitante</span>
+                        <?php if ($l['visitante_id']): ?>
+                            <br><a href="<?= url('/visitantes/ver?id=' . (int)$l['visitante_id']) ?>" style="font-size:12px">Ver visitante</a>
+                        <?php endif; ?>
+                    <?php else: ?>
+                        <span class="pill pill--muted">❓ No encontrado</span>
+                    <?php endif; ?>
+                </td>
+                <td><?= e($l['veh_apto'] ?? $l['vis_apto'] ?? '—') ?></td>
+                <td><small><?= e(ucfirst($l['fuente'])) ?></small></td>
+                <td><small><?= e($l['nivel'] ?: '—') ?> / <?= e($l['celda'] ?: '—') ?></small></td>
+                <td><small><?= e($l['usuario_nombre'] ?? '—') ?></small></td>
+                <td><small><?= e(fecha_humana($l['creado_en'])) ?></small></td>
+            </tr>
+        <?php endforeach; ?>
+        </tbody>
+    </table>
     </div>
 
-    <!-- Torres y apartamentos (placeholder — apunta al módulo si existe) -->
-    <a class="cfg-card" href="<?= url('/apartamentos') ?>">
-        <div class="icon">🏢</div>
-        <h3>Torres y apartamentos</h3>
-        <p>Configurar la estructura del conjunto: torres, pisos, apartamentos.</p>
-        <span class="estado info">Estructural</span>
-    </a>
-
-    <!-- Conjuntos (super_admin) -->
-    <?php if ($esSuperAdmin): ?>
-    <a class="cfg-card" href="<?= url('/conjuntos') ?>">
-        <span class="tag">SUPER</span>
-        <div class="icon">🏬</div>
-        <h3>Conjuntos residenciales</h3>
-        <p>Administrar conjuntos del sistema (multi-tenancy).</p>
-        <span class="estado info">Multi-tenant</span>
-    </a>
+    <?php if ($totalPag > 1): ?>
+        <nav class="pager">
+            <?php $qs = $_GET; unset($qs['p']);
+            $base = url('/lecturas') . '?' . http_build_query($qs);
+            $sep = $qs ? '&' : '';
+            for ($i = 1; $i <= $totalPag; $i++):
+                if ($i === $pagina): ?><span class="pager__item is-active"><?= $i ?></span>
+                <?php else: ?><a class="pager__item" href="<?= $base . $sep ?>p=<?= $i ?>"><?= $i ?></a>
+                <?php endif; ?>
+            <?php endfor; ?>
+        </nav>
     <?php endif; ?>
-
-    <!-- v7.3: Copias de seguridad (super_admin) -->
-    <?php if ($esSuperAdmin): ?>
-    <a class="cfg-card" href="<?= url('/configuracion/backups') ?>">
-        <span class="tag">SUPER</span>
-        <div class="icon">💾</div>
-        <h3>Copias de seguridad</h3>
-        <p>Backup de la base de datos: manual, automático por cron, descargar y restaurar.</p>
-        <span class="estado info">Base de datos</span>
-    </a>
-    <?php endif; ?>
-
-    <!-- v7.0: Importar residentes desde Google Contacts -->
-    <?php if (auth_has_role('super_admin','admin')): ?>
-    <a class="cfg-card" href="<?= url('/importaciones/contactos') ?>">
-        <div class="icon">📇</div>
-        <h3>Importar residentes</h3>
-        <p>Sincronizar desde los contactos de Google. Preview antes de aplicar.</p>
-        <span class="estado info">Contactos</span>
-    </a>
-    <?php endif; ?>
-
-    <!-- Placeholders para futuras configuraciones -->
-    <div class="cfg-card soon">
-        <span class="tag">PRÓXIMAMENTE</span>
-        <div class="icon">🔔</div>
-        <h3>Notificaciones</h3>
-        <p>Correos y alertas automáticas: morosidad, vencimientos, revistas.</p>
-        <span class="estado info">Planeado</span>
-    </div>
-
-    <div class="cfg-card soon">
-        <span class="tag">PRÓXIMAMENTE</span>
-        <div class="icon">💰</div>
-        <h3>Alquileres y morosidad</h3>
-        <p>Reglas de cobro, días de gracia, monto por meses, bloqueo automático.</p>
-        <span class="estado info">Planeado</span>
-    </div>
-
-    <div class="cfg-card soon">
-        <span class="tag">PRÓXIMAMENTE</span>
-        <div class="icon">🎨</div>
-        <h3>Personalización visual</h3>
-        <p>Logo del conjunto, colores del tema, encabezado de reportes.</p>
-        <span class="estado info">Planeado</span>
-    </div>
-
-</div>
-
-<div style="margin-top:20px;padding:12px 16px;background:#f8fafc;border:1px solid #e5e7eb;border-radius:8px;font-size:12px;color:#6b7280">
-    💡 <strong>Nota:</strong> este módulo agrupa configuraciones. Para la gestión operativa
-    (usuarios, importaciones, auditoría), usa el
-    <a href="<?= url('/administracion') ?>" style="color:#1e40af;font-weight:600">panel de administración</a>.
-</div>
+<?php endif; ?>
 
 <?php include INCLUDES_PATH . '/footer.php'; ?>

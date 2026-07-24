@@ -1,0 +1,3 @@
+# /home/myzonaco/smartpark.myzona360.com/config/.htaccess
+# Bloquea TODO acceso directo. Solo accesible vía include() de PHP.
+Require all denied
