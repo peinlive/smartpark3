@@ -1,0 +1,1 @@
+_ultimo_acceso|i:1784239303;_csrf|s:64:"d32166c4d3ea5f9462737e9b0b3c0a96862b1d4b1d4a278572ab20892834db49";user|a:7:{s:2:"id";i:1;s:8:"username";s:10:"superadmin";s:15:"nombre_completo";s:29:"Super Administrador SmartPark";s:11:"conjunto_id";i:1;s:5:"roles";a:1:{i:0;s:11:"super_admin";}s:9:"nivel_max";i:100;s:8:"login_at";i:1784239291;}
