@@ -1,0 +1,75 @@
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Undefined variable $colorGrav in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 62
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Undefined variable $bgGrav in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 69
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Undefined variable $colorGrav in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 69
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Undefined variable $o in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 90
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Trying to access array offset on null in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 90
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Undefined variable $o in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 91
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Trying to access array offset on null in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 91
+[24-Jul-2026 06:47:48 America/Bogota] PHP Deprecated:  strtotime(): Passing null to parameter #1 ($datetime) of type string is deprecated in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 91
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Undefined variable $o in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 92
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Trying to access array offset on null in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 92
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Undefined variable $o in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 98
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Trying to access array offset on null in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 98
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Undefined variable $o in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 105
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Trying to access array offset on null in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 105
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Undefined variable $o in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 106
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Trying to access array offset on null in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 106
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Undefined variable $o in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 107
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Trying to access array offset on null in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 107
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Undefined variable $o in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 107
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Trying to access array offset on null in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 107
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Undefined variable $o in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 108
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Trying to access array offset on null in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 108
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Undefined variable $o in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 109
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Trying to access array offset on null in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 109
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Undefined variable $o in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 117
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Trying to access array offset on null in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 117
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Undefined variable $o in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 117
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Trying to access array offset on null in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 117
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Undefined variable $o in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 118
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Trying to access array offset on null in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 118
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Undefined variable $o in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 121
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Trying to access array offset on null in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 121
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Undefined variable $fotoOcr in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 127
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  Undefined variable $evidencias in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 128
+[24-Jul-2026 06:47:48 America/Bogota] PHP Warning:  foreach() argument must be of type array|object, null given in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 128
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Undefined variable $colorGrav in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 62
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Undefined variable $bgGrav in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 69
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Undefined variable $colorGrav in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 69
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Undefined variable $o in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 90
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Trying to access array offset on null in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 90
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Undefined variable $o in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 91
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Trying to access array offset on null in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 91
+[24-Jul-2026 06:48:29 America/Bogota] PHP Deprecated:  strtotime(): Passing null to parameter #1 ($datetime) of type string is deprecated in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 91
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Undefined variable $o in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 92
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Trying to access array offset on null in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 92
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Undefined variable $o in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 98
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Trying to access array offset on null in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 98
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Undefined variable $o in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 105
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Trying to access array offset on null in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 105
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Undefined variable $o in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 106
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Trying to access array offset on null in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 106
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Undefined variable $o in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 107
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Trying to access array offset on null in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 107
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Undefined variable $o in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 107
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Trying to access array offset on null in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 107
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Undefined variable $o in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 108
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Trying to access array offset on null in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 108
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Undefined variable $o in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 109
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Trying to access array offset on null in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 109
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Undefined variable $o in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 117
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Trying to access array offset on null in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 117
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Undefined variable $o in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 117
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Trying to access array offset on null in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 117
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Undefined variable $o in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 118
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Trying to access array offset on null in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 118
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Undefined variable $o in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 121
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Trying to access array offset on null in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 121
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Undefined variable $fotoOcr in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 127
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  Undefined variable $evidencias in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 128
+[24-Jul-2026 06:48:29 America/Bogota] PHP Warning:  foreach() argument must be of type array|object, null given in /home/myzonaco/smartpark.myzona360.com/modules/observaciones/ver.php on line 128
+[24-Jul-2026 06:57:22 America/Bogota] PHP Fatal error:  Uncaught Error: Call to undefined function flash_has() in /home/myzonaco/smartpark.myzona360.com/modules/consultas/configurar_porteria.php:68
+Stack trace:
+#0 /home/myzonaco/smartpark.myzona360.com/index.php(272): require()
+#1 {main}
+  thrown in /home/myzonaco/smartpark.myzona360.com/modules/consultas/configurar_porteria.php on line 68

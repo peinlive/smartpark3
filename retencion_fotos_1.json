@@ -1,0 +1,12 @@
+{
+    "revistas": {
+        "activa": true,
+        "mantener": 45,
+        "ultima_ejecucion": "2026-07-03 20:37:51"
+    },
+    "lecturas": {
+        "activa": true,
+        "mantener": 500,
+        "ultima_ejecucion": null
+    }
+}

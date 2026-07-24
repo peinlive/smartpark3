@@ -1,0 +1,63 @@
+# /home/myzonaco/smartpark.myzona360.com/.htaccess
+# SmartPark - Configuración Apache principal
+# ─────────────────────────────────────────────────────────────────
+# - Front controller (index.php) maneja TODAS las rutas.
+# - Bloquea acceso directo a /config, /includes, /modules.
+# - Fuerza HTTPS.
+# - Bloquea ejecución de PHP en /uploads.
+# ─────────────────────────────────────────────────────────────────
+
+# Mostrar errores legibles en lugar de página blanca (solo etapa desarrollo)
+php_flag display_errors On
+php_value error_reporting "E_ALL"
+
+# UTF-8 por defecto en respuestas HTML
+AddDefaultCharset UTF-8
+
+# ───── Seguridad básica ─────
+Options -Indexes
+ServerSignature Off
+
+# Ocultar archivos sensibles
+<FilesMatch "^\.(htaccess|env|git|DS_Store)$">
+    Require all denied
+</FilesMatch>
+<FilesMatch "\.(sql|md|log|bak|inc)$">
+    Require all denied
+</FilesMatch>
+
+# ───── HTTPS forzado ─────
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Forzar HTTPS
+    RewriteCond %{HTTPS} !=on
+    RewriteCond %{HTTP:X-Forwarded-Proto} !https [NC]
+    RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+
+    # Bloquear acceso directo a /config, /includes, /modules
+    RewriteRule ^(config|includes|modules)(/.*)?$ - [F,L]
+
+    # Permitir acceso directo a assets, uploads y .well-known (SSL)
+    RewriteRule ^(assets|uploads|\.well-known)(/.*)?$ - [L]
+
+    # Front Controller: todo lo demás va a index.php
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^(.*)$ index.php?route=$1 [QSA,L]
+</IfModule>
+
+# ───── Cache de assets estáticos ─────
+<IfModule mod_expires.c>
+    ExpiresActive On
+    ExpiresByType text/css            "access plus 7 days"
+    ExpiresByType application/javascript "access plus 7 days"
+    ExpiresByType image/svg+xml       "access plus 30 days"
+    ExpiresByType image/png           "access plus 30 days"
+    ExpiresByType image/jpeg          "access plus 30 days"
+</IfModule>
+
+# ───── Compresión Gzip ─────
+<IfModule mod_deflate.c>
+    AddOutputFilterByType DEFLATE text/html text/plain text/css application/javascript application/json
+</IfModule>
